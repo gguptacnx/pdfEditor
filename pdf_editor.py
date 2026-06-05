@@ -1,42 +1,45 @@
 import sys
 import os
 import fitz  # PyMuPDF
+import tempfile
+import shutil
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QTextEdit,
     QMessageBox, QGraphicsView, QGraphicsScene,
     QGraphicsPixmapItem, QGraphicsRectItem
 )
-from PyQt6.QtGui import QPixmap, QImage, QColor, QPen, QBrush
+from PyQt6.QtGui import QPixmap, QImage, QColor, QPen, QBrush, QFont
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal
 
 class FloatingEditor(QTextEdit):
-    editing_finished = pyqtSignal(str, int)  # new text, block index
+    editing_finished = pyqtSignal(str, dict)  # new text, line_data dictionary
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.block_index = -1
+        self.line_data = None
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.SubWindow)
-        self.setStyleSheet("QTextEdit { background-color: rgba(255, 255, 255, 240); border: 2px solid blue; }")
+        # Add padding to make it look like Acrobat
+        self.setStyleSheet("QTextEdit { background-color: white; border: 1px solid #0055cc; padding: 2px; }")
         self.hide()
 
     def focusOutEvent(self, event):
         super().focusOutEvent(event)
-        self.editing_finished.emit(self.toPlainText(), self.block_index)
+        self.editing_finished.emit(self.toPlainText(), self.line_data)
         self.hide()
 
 class ClickableRectItem(QGraphicsRectItem):
-    def __init__(self, rect, block_index, callback, parent=None):
+    def __init__(self, rect, line_data, callback, parent=None):
         super().__init__(rect, parent)
-        self.block_index = block_index
+        self.line_data = line_data
         self.callback = callback
         self.setAcceptHoverEvents(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setPen(QPen(QColor(0, 0, 0, 0))) # Transparent by default
-        self.setBrush(QBrush(QColor(0, 0, 255, 30)))  # Light blue, slightly transparent
+        self.setCursor(Qt.CursorShape.IBeamCursor) # Acrobat uses text cursor
+        self.setPen(QPen(QColor(0, 0, 0, 0)))
+        self.setBrush(QColor(0, 0, 0, 0)) # Fully transparent by default
 
     def hoverEnterEvent(self, event):
-        self.setPen(QPen(QColor(255, 0, 0), 2))
+        self.setPen(QPen(QColor(150, 150, 150), 1, Qt.PenStyle.DashLine)) # Acrobat-like subtle hover
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):
@@ -45,7 +48,7 @@ class ClickableRectItem(QGraphicsRectItem):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.callback(self.block_index, self.rect())
+            self.callback(self.line_data, self.rect())
         super().mousePressEvent(event)
 
 
@@ -56,12 +59,17 @@ class PDFEditorWindow(QMainWindow):
         self.setGeometry(100, 100, 1200, 800)
 
         self.doc = None
+        self.original_filepath = None
         self.current_page_num = 0
         self.current_page = None
-        self.blocks = []
         self.zoom = 2.0
+        self.temp_dir = tempfile.mkdtemp()
 
         self.init_ui()
+
+    def closeEvent(self, event):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        super().closeEvent(event)
 
     def init_ui(self):
         central_widget = QWidget()
@@ -102,6 +110,7 @@ class PDFEditorWindow(QMainWindow):
     def open_pdf(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
         if filepath:
+            self.original_filepath = filepath
             self.doc = fitz.open(filepath)
             self.current_page_num = 0
             self.render_page()
@@ -111,8 +120,21 @@ class PDFEditorWindow(QMainWindow):
             return
         filepath, _ = QFileDialog.getSaveFileName(self, "Save PDF", "", "PDF Files (*.pdf)")
         if filepath:
-            self.doc.save(filepath)
-            QMessageBox.information(self, "Success", f"Saved to {filepath}")
+            try:
+                # PyMuPDF cannot save directly over the open file.
+                if filepath == self.original_filepath:
+                    temp_save_path = os.path.join(self.temp_dir, "temp_save.pdf")
+                    self.doc.save(temp_save_path)
+                    self.doc.close()
+                    shutil.move(temp_save_path, filepath)
+                    # Reopen the document
+                    self.doc = fitz.open(filepath)
+                    self.render_page()
+                else:
+                    self.doc.save(filepath)
+                QMessageBox.information(self, "Success", f"Saved to {filepath}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save PDF:\n{str(e)}")
 
     def prev_page(self):
         if self.doc and self.current_page_num > 0:
@@ -144,187 +166,90 @@ class PDFEditorWindow(QMainWindow):
         self.scene.addItem(pixmap_item)
         self.scene.setSceneRect(0.0, 0.0, float(pix.width), float(pix.height))
 
-        self.blocks = self.current_page.get_text("blocks")
+        # Extract dictionary and create clickable regions per LINE, not block
+        page_dict = self.current_page.get_text("dict")
+        for b_idx, b in enumerate(page_dict.get("blocks", [])):
+            if b.get("type") == 0:  # Text block
+                for l_idx, line in enumerate(b.get("lines", [])):
+                    if len(line.get("spans", [])) == 0:
+                        continue
 
-        for i, b in enumerate(self.blocks):
-            if b[6] == 0:  # If it's a text block
-                x0, y0, x1, y1 = b[:4]
-                rect = QRectF(x0 * self.zoom, y0 * self.zoom, (x1 - x0) * self.zoom, (y1 - y0) * self.zoom)
-                rect_item = ClickableRectItem(rect, i, self.block_clicked)
-                self.scene.addItem(rect_item)
+                    full_text = "".join(s["text"] for s in line["spans"])
 
-    def block_clicked(self, block_index, rect):
-        self.floating_editor.block_index = block_index
-        block = self.blocks[block_index]
-        text = block[4]
+                    first_span = line["spans"][0]
+                    line_data = {
+                        "block_index": b_idx,
+                        "line_index": l_idx,
+                        "text": full_text,
+                        "bbox": line["bbox"], # x0, y0, x1, y1
+                        "font": first_span["font"],
+                        "size": first_span["size"],
+                        "color": first_span.get("color", 0) # integer color
+                    }
 
+                    x0, y0, x1, y1 = line["bbox"]
+                    rect = QRectF(x0 * self.zoom, y0 * self.zoom, (x1 - x0) * self.zoom, (y1 - y0) * self.zoom)
+                    rect_item = ClickableRectItem(rect, line_data, self.line_clicked)
+                    self.scene.addItem(rect_item)
+
+    def line_clicked(self, line_data, rect):
+        self.floating_editor.line_data = line_data
+
+        # Map scene coordinates to view coordinates
         view_rect = self.view.mapFromScene(rect).boundingRect()
 
-        padding = 5
+        padding = 4
+        # We make the box slightly wider so typing doesn't instantly wrap
         self.floating_editor.setGeometry(view_rect.x() - padding, view_rect.y() - padding,
-                                         view_rect.width() + padding*2, view_rect.height() + padding*2)
-        self.floating_editor.setText(text)
+                                         view_rect.width() + padding*2 + 50, view_rect.height() + padding*2)
+
+        font = QFont()
+        # Estimate UI font size to match PDF zoom
+        font.setPointSizeF(line_data["size"] * self.zoom * 0.75)
+        self.floating_editor.setFont(font)
+
+        self.floating_editor.setText(line_data["text"])
         self.floating_editor.show()
         self.floating_editor.setFocus()
 
-    def push_elements_down_destructive(self, threshold_y, shift_amount):
-        """
-        Physically shifts text blocks and images below the threshold down by shift_amount.
-        This re-embeds the original font streams to preserve visual formatting.
-        """
-        all_blocks = self.current_page.get_text("dict")["blocks"]
-        text_elements_to_redraw = []
-        images_to_redraw = []
+    def apply_changes(self, new_text, line_data):
+        if not self.doc or not line_data:
+            return
 
-        for b in all_blocks:
-            bbox = fitz.Rect(b["bbox"])
-            if bbox.y0 >= threshold_y - 2:
-                if b["type"] == 0:  # Text
-                    text_elements_to_redraw.append(b)
-                    for line in b.get("lines", []):
-                        for span in line.get("spans", []):
-                            self.current_page.add_redact_annot(fitz.Rect(span["bbox"]))
-                elif b["type"] == 1: # Image
-                    images_to_redraw.append({
-                        "bbox": bbox,
-                        "image": b.get("image", None),
-                        "ext": b.get("ext", "png")
-                    })
-                    self.current_page.add_redact_annot(bbox)
+        old_text = line_data["text"]
 
+        # If user just clicked away without changing, do nothing
+        if new_text.strip() == old_text.strip():
+            return
+
+        # We only redact the specific line's bounding box to preserve adjacent tabular columns!
+        rect = fitz.Rect(line_data["bbox"])
+        self.current_page.add_redact_annot(rect)
         self.current_page.apply_redactions()
 
-        for b in text_elements_to_redraw:
-            for line in b.get("lines", []):
-                for span in line.get("spans", []):
-                    span_bbox = fitz.Rect(span["bbox"])
-                    text = span["text"]
-                    font_size = span["size"]
-                    font_name = span["font"]
+        font_name = line_data["font"]
+        font_size = line_data["size"]
 
-                    shifted_rect = fitz.Rect(span_bbox.x0, span_bbox.y0 + shift_amount,
-                                             self.current_page.rect.width, span_bbox.y1 + shift_amount)
-
-                    font_buffer = None
-                    try:
-                        fonts = self.doc.get_page_fonts(self.current_page_num)
-                        for f in fonts:
-                            if f[3] in font_name:
-                                font_buffer = self.doc.extract_font(f[0])[3]
-                                break
-                    except Exception:
-                        pass
-
-                    font_args = {}
-                    if font_buffer:
-                        font_args['fontbuffer'] = font_buffer
-                        font_args['fontname'] = font_name
-
-                    try:
-                        self.current_page.insert_textbox(shifted_rect, text, fontsize=font_size, **font_args)
-                    except Exception:
-                        self.current_page.insert_textbox(shifted_rect, text, fontsize=font_size)
-
-        for img in images_to_redraw:
-            if img["image"]:
-                bbox = img["bbox"]
-                shifted_rect = fitz.Rect(bbox.x0, bbox.y0 + shift_amount,
-                                         bbox.x1, bbox.y1 + shift_amount)
-                self.current_page.insert_image(shifted_rect, stream=img["image"])
-
-
-    def apply_changes(self, new_text, block_index):
-        if not self.doc or block_index == -1:
-            return
-
-        block = self.blocks[block_index]
-        old_text = block[4]
-
-        if new_text == old_text:
-            return
-
-        block_dict = self.current_page.get_text("dict")["blocks"][block_index]
-
-        original_lines_data = []
-        if "lines" in block_dict and len(block_dict["lines"]) > 0:
-            for line in block_dict["lines"]:
-                if len(line["spans"]) > 0:
-                    span = line["spans"][0]
-                    original_lines_data.append({
-                        "x0": span["bbox"][0],
-                        "y0": span["bbox"][1],
-                        "x1": span["bbox"][2],
-                        "size": span["size"],
-                        "font": span["font"]
-                    })
-
-        if not original_lines_data:
-            return
-
-        first_span = original_lines_data[0]
-        font_size = first_span["size"]
-        start_y = first_span["y0"]
-        font_name = first_span["font"]
-
-        font_file = None
-        reply = QMessageBox.question(self, 'Font Check',
-                                     f'Do you want to provide a local font file (.ttf/.otf) for this text? Otherwise, the embedded font or standard Helvetica will be used.',
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            font_file, _ = QFileDialog.getOpenFileName(self, "Select Font File", "", "Font Files (*.ttf *.otf)")
-            if not font_file:
-                font_file = None
-
-        # To avoid destroying adjacent columns, we only redact the EXACT bounding box of the old text span.
-        for l_data in original_lines_data:
-            # We use x1 to constrain the right side of the redaction to the actual word width,
-            # NOT the edge of the page, preventing destruction of nearby tabular data.
-            span_rect = fitz.Rect(l_data["x0"], l_data["y0"], l_data["x1"], l_data["y0"] + l_data["size"] * 1.2)
-            self.current_page.add_redact_annot(span_rect)
-
-        self.current_page.apply_redactions()
-
-        old_lines = [l for l in old_text.split('\n') if l.strip()]
-        new_lines = [l for l in new_text.split('\n') if l.strip()]
-        line_diff = len(new_lines) - len(old_lines)
-
-        if line_diff > 0:
-            shift_amount = line_diff * font_size * 1.2
-            self.push_elements_down_destructive(start_y + font_size * 1.2, shift_amount)
-
+        # Attempt to use embedded buffer
         font_args = {}
-        if font_file:
-            font_args['fontfile'] = font_file
-            font_args['fontname'] = 'custom'
-        else:
-            # Attempt to use embedded buffer
-            try:
-                fonts = self.doc.get_page_fonts(self.current_page_num)
-                for f in fonts:
-                    if f[3] in font_name:
-                        font_args['fontbuffer'] = self.doc.extract_font(f[0])[3]
-                        font_args['fontname'] = font_name
-                        break
-            except Exception:
-                pass
+        try:
+            fonts = self.doc.get_page_fonts(self.current_page_num)
+            for f in fonts:
+                if f[3] in font_name:
+                    font_args['fontbuffer'] = self.doc.extract_font(f[0])[3]
+                    font_args['fontname'] = font_name
+                    break
+        except Exception:
+            pass
 
-        for i, line_text in enumerate(new_lines):
-            if i < len(original_lines_data):
-                # Use EXACT original coordinates
-                l_data = original_lines_data[i]
-                target_x0 = l_data["x0"]
-                target_y0 = l_data["y0"]
-                f_size = l_data["size"]
-            else:
-                target_x0 = original_lines_data[-1]["x0"]
-                target_y0 = start_y + (i * font_size * 1.2)
-                f_size = font_size
+        # The bounding box height for insert_textbox needs to be sufficiently large
+        # otherwise PyMuPDF silently fails to draw the text inside the box.
+        new_rect = fitz.Rect(rect.x0, rect.y0, self.current_page.rect.width, rect.y1 + font_size * 2)
 
-            line_rect = fitz.Rect(target_x0, target_y0, self.current_page.rect.width, self.current_page.rect.height)
-            try:
-                self.current_page.insert_textbox(line_rect, line_text, fontsize=f_size, **font_args)
-            except Exception:
-                self.current_page.insert_textbox(line_rect, line_text, fontsize=f_size)
+        try:
+            self.current_page.insert_textbox(new_rect, new_text, fontsize=font_size, **font_args)
+        except Exception:
+            self.current_page.insert_textbox(new_rect, new_text, fontsize=font_size)
 
         self.render_page()
 
