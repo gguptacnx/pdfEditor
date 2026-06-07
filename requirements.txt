@@ -1,3 +1,6 @@
 PyMuPDF
 PyQt6
 requests
+pandas
+pillow
+fpdf2

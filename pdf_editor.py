@@ -3,6 +3,10 @@ import os
 import fitz  # PyMuPDF
 import tempfile
 import shutil
+from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
+import csv
+from fpdf import FPDF
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QTextEdit,
@@ -44,6 +48,7 @@ class ClickableRectItem(QGraphicsRectItem):
         self.setAcceptHoverEvents(True)
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setPen(QPen(QColor(0, 0, 0, 0)))
         self.setBrush(QColor(0, 0, 0, 0))
@@ -139,7 +144,6 @@ class ResizableImageItem(QGraphicsPixmapItem):
 
     def mouseReleaseEvent(self, event):
         self.is_resizing = False
-        # Sync state
         scene = self.scene()
         if scene:
             view = scene.views()[0]
@@ -277,6 +281,25 @@ class PDFEditorWindow(QMainWindow):
         self.btn_next.clicked.connect(self.next_page)
         self.lbl_page = QLabel("Page: 0 / 0")
 
+
+        # New PDF, Convert, Print
+        self.btn_new_pdf = QPushButton("New PDF")
+        self.btn_new_pdf.clicked.connect(self.create_new_pdf)
+        self.btn_convert_txt = QPushButton("TXT to PDF")
+        self.btn_convert_txt.clicked.connect(self.convert_txt_to_pdf)
+        self.btn_convert_img = QPushButton("Image to PDF")
+        self.btn_convert_img.clicked.connect(self.convert_img_to_pdf)
+        self.btn_convert_csv = QPushButton("CSV to PDF")
+        self.btn_convert_csv.clicked.connect(self.convert_csv_to_pdf)
+        self.btn_print = QPushButton("Print")
+        self.btn_print.clicked.connect(self.print_pdf)
+
+        toolbar_layout.addWidget(self.btn_new_pdf)
+        toolbar_layout.addWidget(self.btn_convert_txt)
+        toolbar_layout.addWidget(self.btn_convert_img)
+        toolbar_layout.addWidget(self.btn_convert_csv)
+        toolbar_layout.addWidget(self.btn_print)
+
         toolbar_layout.addWidget(self.btn_open)
         toolbar_layout.addWidget(self.btn_save)
         toolbar_layout.addWidget(self.btn_toggle_grid)
@@ -361,6 +384,7 @@ class PDFEditorWindow(QMainWindow):
         self.format_toolbar.addWidget(self.btn_search)
 
         self.scene = QGraphicsScene()
+        self.view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.view = PDFGraphicsView(self.scene)
         self.view.parent_window = self
         main_layout.addWidget(self.view)
@@ -395,6 +419,87 @@ class PDFEditorWindow(QMainWindow):
         font.setItalic(self.btn_italic.isChecked())
         font.setPointSizeF(self.spin_size.value() * self.zoom * 0.75)
         self.floating_editor.setFont(font)
+
+
+
+    def print_pdf(self):
+        if not self.doc: return
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        dialog = QPrintDialog(printer, self)
+        if dialog.exec() == QPrintDialog.DialogCode.Accepted:
+            from PyQt6.QtGui import QPainter
+            painter = QPainter(printer)
+            for page_num in range(len(self.doc)):
+                if page_num > 0: printer.newPage()
+                page = self.doc[page_num]
+                # High res for print
+                pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
+                img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
+
+                # Scale to page
+                rect = painter.viewport()
+                size = img.size()
+                size.scale(rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
+                painter.setViewport(rect.x(), rect.y(), size.width(), size.height())
+                painter.setWindow(img.rect())
+
+                painter.drawImage(0, 0, img)
+            painter.end()
+            QMessageBox.information(self, "Print", "Print job sent.")
+
+
+    def create_new_pdf(self):
+        filepath, _ = QFileDialog.getSaveFileName(self, "Create New PDF", "", "PDF Files (*.pdf)")
+        if filepath:
+            pdf = fitz.open()
+            pdf.new_page()
+            pdf.save(filepath)
+            pdf.close()
+            self.original_filepath = filepath
+            self.doc = fitz.open(filepath)
+            self.current_page_num = 0
+            self.render_page()
+
+    def convert_txt_to_pdf(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select Text File", "", "Text Files (*.txt)")
+        if not filepath: return
+        with open(filepath, 'r') as f: text_content = f.read()
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.multi_cell(0, 10, text_content)
+        out_path = filepath + ".pdf"
+        pdf.output(out_path)
+        QMessageBox.information(self, "Success", f"Converted to {out_path}")
+
+    def convert_img_to_pdf(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select Image File", "", "Images (*.png *.jpg *.jpeg)")
+        if not filepath: return
+        doc = fitz.open()
+        img_doc = fitz.open(filepath)
+        pdfbytes = img_doc.convert_to_pdf()
+        img_pdf = fitz.open("pdf", pdfbytes)
+        doc.insert_pdf(img_pdf)
+        out_path = filepath + ".pdf"
+        doc.save(out_path)
+        doc.close()
+        img_doc.close()
+        QMessageBox.information(self, "Success", f"Converted to {out_path}")
+
+    def convert_csv_to_pdf(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select CSV File", "", "CSV Files (*.csv)")
+        if not filepath: return
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=10)
+        with open(filepath, newline='', encoding='utf-8') as csvfile:
+            reader = csv.reader(csvfile)
+            for row in reader:
+                line = " | ".join(row)
+                pdf.cell(0, 10, txt=line, ln=True)
+        out_path = filepath + ".pdf"
+        pdf.output(out_path)
+        QMessageBox.information(self, "Success", f"Converted to {out_path}")
 
     def open_pdf(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
