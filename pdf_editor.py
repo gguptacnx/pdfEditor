@@ -384,8 +384,8 @@ class PDFEditorWindow(QMainWindow):
         self.format_toolbar.addWidget(self.btn_search)
 
         self.scene = QGraphicsScene()
-        self.view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.view = PDFGraphicsView(self.scene)
+        self.view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.view.parent_window = self
         main_layout.addWidget(self.view)
 
