@@ -4,11 +4,12 @@ import fitz  # PyMuPDF
 import tempfile
 import shutil
 from PyQt6.QtWidgets import (
-    QColorDialog, QToolBar, QComboBox, QSpinBox, QLineEdit, QCheckBox,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QTextEdit,
     QMessageBox, QGraphicsView, QGraphicsScene,
-    QGraphicsPixmapItem, QGraphicsRectItem, QInputDialog
+    QGraphicsPixmapItem, QGraphicsRectItem, QInputDialog,
+    QColorDialog, QToolBar, QComboBox, QSpinBox, QLineEdit, QCheckBox, QMenu,
+    QTableWidget, QTableWidgetItem, QGraphicsProxyWidget
 )
 from PyQt6.QtGui import QPixmap, QImage, QColor, QPen, QBrush, QFont, QTextCharFormat
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QPointF
@@ -90,6 +91,120 @@ class ClickableRectItem(QGraphicsRectItem):
             elif is_drag:
                 self.drag_callback(self.line_data, dx, dy)
 
+class ResizableImageItem(QGraphicsPixmapItem):
+    def __init__(self, pixmap, img_dict, doc, page_num, parent=None):
+        super().__init__(pixmap, parent)
+        self.img_dict = img_dict
+        self.doc = doc
+        self.page_num = page_num
+        self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setAcceptHoverEvents(True)
+        self.is_resizing = False
+        self.resize_margin = 10
+        self.start_pos = None
+        self.start_rect = None
+
+    def hoverMoveEvent(self, event):
+        pos = event.pos()
+        rect = self.boundingRect()
+        if pos.x() >= rect.width() - self.resize_margin and pos.y() >= rect.height() - self.resize_margin:
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        else:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        super().hoverMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.pos()
+            rect = self.boundingRect()
+            if pos.x() >= rect.width() - self.resize_margin and pos.y() >= rect.height() - self.resize_margin:
+                self.is_resizing = True
+                self.start_pos = event.scenePos()
+                self.start_rect = self.boundingRect()
+            else:
+                self.is_resizing = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.is_resizing:
+            diff = event.scenePos() - self.start_pos
+            new_w = max(10, self.start_rect.width() + diff.x())
+            new_h = max(10, self.start_rect.height() + diff.y())
+            scaled_pixmap = self.pixmap().scaled(int(new_w), int(new_h), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.setPixmap(scaled_pixmap)
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.is_resizing = False
+        # Sync state
+        scene = self.scene()
+        if scene:
+            view = scene.views()[0]
+            zoom = view.parent_window.zoom
+            self.img_dict["x0"] = self.x() / zoom
+            self.img_dict["y0"] = self.y() / zoom
+            self.img_dict["w"] = self.boundingRect().width() / zoom
+            self.img_dict["h"] = self.boundingRect().height() / zoom
+        super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event):
+        menu = QMenu()
+        delete_action = menu.addAction("Delete Signature/Image")
+        action = menu.exec(event.screenPos())
+        if action == delete_action:
+            self.img_dict["deleted"] = True
+            self.scene().removeItem(self)
+
+
+class DraggableTableProxy(QGraphicsProxyWidget):
+    def __init__(self, table_dict, parent=None):
+        super().__init__(parent)
+        self.table_dict = table_dict
+        self.setFlag(QGraphicsProxyWidget.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsProxyWidget.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsProxyWidget.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        scene = self.scene()
+        if scene:
+            view = scene.views()[0]
+            zoom = view.parent_window.zoom
+            self.table_dict["x0"] = self.x() / zoom
+            self.table_dict["y0"] = self.y() / zoom
+
+    def contextMenuEvent(self, event):
+        menu = QMenu()
+        add_r = menu.addAction("Add Row")
+        del_r = menu.addAction("Delete Row")
+        add_c = menu.addAction("Add Column")
+        del_c = menu.addAction("Delete Column")
+        menu.addSeparator()
+        del_t = menu.addAction("Delete Table")
+
+        action = menu.exec(event.screenPos())
+        table_widget = self.widget()
+
+        if action == add_r:
+            table_widget.insertRow(table_widget.rowCount())
+            self.table_dict["rows"] += 1
+        elif action == del_r:
+            table_widget.removeRow(table_widget.currentRow() if table_widget.currentRow() >= 0 else table_widget.rowCount() - 1)
+            self.table_dict["rows"] = max(1, self.table_dict["rows"] - 1)
+        elif action == add_c:
+            table_widget.insertColumn(table_widget.columnCount())
+            self.table_dict["cols"] += 1
+        elif action == del_c:
+            table_widget.removeColumn(table_widget.currentColumn() if table_widget.currentColumn() >= 0 else table_widget.columnCount() - 1)
+            self.table_dict["cols"] = max(1, self.table_dict["cols"] - 1)
+        elif action == del_t:
+            self.table_dict["deleted"] = True
+            self.scene().removeItem(self)
+
+
 class PDFGraphicsView(QGraphicsView):
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
@@ -103,8 +218,6 @@ class PDFGraphicsView(QGraphicsView):
                 self.parent_window.add_new_text(scene_pos)
             elif self.parent_window.btn_add_signature.isChecked():
                 self.parent_window.add_signature(scene_pos)
-
-
 
 class PDFEditorWindow(QMainWindow):
     def __init__(self):
@@ -120,12 +233,23 @@ class PDFEditorWindow(QMainWindow):
         self.temp_dir = tempfile.mkdtemp()
         self.grid_items = []
         self.form_widgets = []
+        self.interactive_images = []
+        self.interactive_tables = []
+        self.search_highlights = []
+        self.copied_format = None
 
         self.init_ui()
 
     def closeEvent(self, event):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
         super().closeEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            if self.btn_format_painter.isChecked():
+                self.btn_format_painter.setChecked(False)
+                self.copied_format = None
+        super().keyPressEvent(event)
 
     def init_ui(self):
         central_widget = QWidget()
@@ -165,7 +289,6 @@ class PDFEditorWindow(QMainWindow):
 
         main_layout.addLayout(toolbar_layout)
 
-                # Formatting Toolbar
         self.format_toolbar = QToolBar("Formatting")
         self.addToolBar(self.format_toolbar)
 
@@ -221,6 +344,22 @@ class PDFEditorWindow(QMainWindow):
         self.btn_add_signature.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.format_toolbar.addWidget(self.btn_add_signature)
 
+        self.format_toolbar.addSeparator()
+
+        self.btn_format_painter = QPushButton("Format Painter")
+        self.btn_format_painter.setCheckable(True)
+        self.btn_format_painter.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.format_toolbar.addWidget(self.btn_format_painter)
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search...")
+        self.search_input.setFixedWidth(150)
+        self.format_toolbar.addWidget(self.search_input)
+
+        self.btn_search = QPushButton("Find")
+        self.btn_search.clicked.connect(self.search_text)
+        self.format_toolbar.addWidget(self.btn_search)
+
         self.scene = QGraphicsScene()
         self.view = PDFGraphicsView(self.scene)
         self.view.parent_window = self
@@ -270,6 +409,42 @@ class PDFEditorWindow(QMainWindow):
         filepath, _ = QFileDialog.getSaveFileName(self, "Save PDF", "", "PDF Files (*.pdf)")
         if filepath:
             try:
+                # Burn interactive tables
+                if hasattr(self, 'interactive_tables'):
+                    for t_dict in self.interactive_tables:
+                        if not t_dict.get("deleted", False):
+                            target_page = self.doc[t_dict.get("page_num", 0)]
+                            # If not currently on screen, we just rely on dictionary state. If on screen, grab from UI if needed.
+                            # The dictionary state is now fully synced via signals, so we can just use the dictionary.
+                            x0 = t_dict["x0"]
+                            y0 = t_dict["y0"]
+                            curr_y = y0
+                            cell_data = t_dict.get("cells", {})
+                            for r in range(t_dict["rows"]):
+                                curr_x = x0
+                                row_h = 30 # Fixed default in this MVP
+                                for c in range(t_dict["cols"]):
+                                    col_w = 100
+                                    rect = fitz.Rect(curr_x, curr_y, curr_x + col_w, curr_y + row_h)
+                                    target_page.draw_rect(rect, color=(0,0,0), width=1)
+
+                                    val = cell_data.get((r, c), "")
+                                    if val:
+                                        text_rect = fitz.Rect(curr_x + 2, curr_y + 2, curr_x + col_w, curr_y + row_h)
+                                        target_page.insert_textbox(text_rect, val, fontsize=11, fontname="helv")
+
+                                    curr_x += col_w
+                                curr_y += row_h
+                    self.interactive_tables = []
+
+                # Burn interactive images
+                for img_dict in self.interactive_images:
+                    if not img_dict.get("deleted", False):
+                        target_page = self.doc[img_dict.get("page_num", 0)]
+                        rect = fitz.Rect(img_dict["x0"], img_dict["y0"], img_dict["x0"] + img_dict["w"], img_dict["y0"] + img_dict["h"])
+                        target_page.insert_image(rect, stream=img_dict["bytes"])
+                self.interactive_images = []
+
                 if filepath == self.original_filepath:
                     temp_save_path = os.path.join(self.temp_dir, "temp_save.pdf")
                     self.doc.save(temp_save_path)
@@ -300,7 +475,6 @@ class PDFEditorWindow(QMainWindow):
             for item in self.grid_items:
                 self.scene.removeItem(item)
             self.grid_items = []
-        self.form_widgets = []
 
     def insert_table(self):
         if not self.doc: return
@@ -309,38 +483,15 @@ class PDFEditorWindow(QMainWindow):
         cols, ok2 = QInputDialog.getInt(self, "Insert Table", "Number of Columns:", 3, 1, 100)
         if not ok2: return
 
-        cell_width = 100
-        cell_height = 30
-        start_x = 50
-        start_y = 50
-        table_width = cols * cell_width
-        table_height = rows * cell_height
-
-        self.current_page.draw_rect(fitz.Rect(start_x, start_y, start_x + table_width, start_y + table_height), color=(0,0,0), width=1)
-        for i in range(1, cols):
-            x = start_x + (i * cell_width)
-            self.current_page.draw_line(fitz.Point(x, start_y), fitz.Point(x, start_y + table_height), color=(0,0,0), width=1)
-        for i in range(1, rows):
-            y = start_y + (i * cell_height)
-            self.current_page.draw_line(fitz.Point(start_x, y), fitz.Point(start_x + table_width, y), color=(0,0,0), width=1)
-
-        self.render_page()
-        self.btn_toggle_grid.setChecked(True)
-
-
-    def add_signature(self, scene_pos):
-        if not self.doc: return
-        self.btn_add_signature.setChecked(False) # reset mode
-
-        filepath, _ = QFileDialog.getOpenFileName(self, "Select Signature Image", "", "Images (*.png *.jpg *.jpeg)")
-        if not filepath: return
-
-        # Unscale coordinates
-        pdf_x = scene_pos.x() / self.zoom
-        pdf_y = scene_pos.y() / self.zoom
-
-        rect = fitz.Rect(pdf_x, pdf_y, pdf_x + 150, pdf_y + 50)
-        self.current_page.insert_image(rect, filename=filepath)
+        table_dict = {
+            "rows": rows,
+            "cols": cols,
+            "x0": 50,
+            "y0": 50,
+            "deleted": False,
+            "page_num": self.current_page_num
+        }
+        self.interactive_tables.append(table_dict)
         self.render_page()
 
     def add_new_text(self, scene_pos):
@@ -365,6 +516,51 @@ class PDFEditorWindow(QMainWindow):
         self.floating_editor.setFocus()
         self.btn_add_text.setChecked(False)
 
+    def add_signature(self, scene_pos):
+        if not self.doc: return
+        self.btn_add_signature.setChecked(False)
+
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select Signature Image", "", "Images (*.png *.jpg *.jpeg)")
+        if not filepath: return
+
+        with open(filepath, "rb") as f:
+            img_bytes = f.read()
+
+        pdf_x = scene_pos.x() / self.zoom
+        pdf_y = scene_pos.y() / self.zoom
+
+        img_dict = {
+            "bytes": img_bytes,
+            "x0": pdf_x,
+            "y0": pdf_y,
+            "w": 150,
+            "h": 50,
+            "deleted": False,
+            "page_num": self.current_page_num,
+            "is_new": True
+        }
+        self.interactive_images.append(img_dict)
+        self.render_page()
+
+    def search_text(self):
+        if not self.current_page: return
+        query = self.search_input.text()
+
+        for item in self.search_highlights:
+            self.scene.removeItem(item)
+        self.search_highlights = []
+
+        if not query: return
+
+        rects = self.current_page.search_for(query)
+        for r in rects:
+            scaled_rect = QRectF(r.x0 * self.zoom, r.y0 * self.zoom, (r.x1 - r.x0) * self.zoom, (r.y1 - r.y0) * self.zoom)
+            rect_item = QGraphicsRectItem(scaled_rect)
+            rect_item.setBrush(QBrush(QColor(255, 255, 0, 100)))
+            rect_item.setPen(QPen(Qt.PenStyle.NoPen))
+            self.scene.addItem(rect_item)
+            self.search_highlights.append(rect_item)
+
     def prev_page(self):
         if self.doc and self.current_page_num > 0:
             self.current_page_num -= 1
@@ -380,7 +576,7 @@ class PDFEditorWindow(QMainWindow):
         self.lbl_page.setText(f"Page: {self.current_page_num + 1} / {len(self.doc)}")
         self.scene.clear()
         self.grid_items = []
-        self.form_widgets = []
+        self.search_highlights = []
         if self.btn_toggle_grid.isChecked():
             self.toggle_grid(True)
 
@@ -391,7 +587,7 @@ class PDFEditorWindow(QMainWindow):
         self.scene.addItem(QGraphicsPixmapItem(QPixmap.fromImage(img)))
         self.scene.setSceneRect(0.0, 0.0, float(pix.width), float(pix.height))
 
-        # Render interactive form fields
+        # Render form fields
         for proxy in self.form_widgets:
             self.scene.removeItem(proxy)
         self.form_widgets = []
@@ -421,13 +617,43 @@ class PDFEditorWindow(QMainWindow):
                 proxy.setPos(ui_x, ui_y)
                 self.form_widgets.append(proxy)
 
-            elif widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
-                ui_elem = QCheckBox(self.view)
-                ui_elem.setGeometry(int(ui_x), int(ui_y), int(ui_w), int(ui_h))
-                ui_elem.setChecked(widget.field_value)
-                ui_elem.stateChanged.connect(lambda state, w=widget: self.update_form_field(w, bool(state)))
-                ui_elem.show()
-                self.form_widgets.append(ui_elem)
+        # Render interactive tables
+        if not hasattr(self, 'interactive_tables'): self.interactive_tables = []
+        for t_dict in self.interactive_tables:
+            if t_dict.get("deleted", False) or t_dict.get("page_num", 0) != self.current_page_num: continue
+
+            table = QTableWidget(t_dict["rows"], t_dict["cols"])
+            table.horizontalHeader().setVisible(False)
+            table.verticalHeader().setVisible(False)
+            table.setStyleSheet("QTableWidget { background-color: transparent; } QTableWidget::item { border: 1px solid black; }")
+            for c in range(t_dict["cols"]): table.setColumnWidth(c, int(100 * self.zoom))
+            for r in range(t_dict["rows"]): table.setRowHeight(r, int(30 * self.zoom))
+
+            # Restore data
+            cell_data = t_dict.get("cells", {})
+            for (r, c), val in cell_data.items():
+                if r < table.rowCount() and c < table.columnCount():
+                    item = QTableWidgetItem(val)
+                    table.setItem(r, c, item)
+
+            table.itemChanged.connect(lambda item, d=t_dict, t=table: self.update_table_data(d, t))
+
+            proxy = DraggableTableProxy(t_dict)
+            proxy.setWidget(table)
+            proxy.setPos(t_dict["x0"] * self.zoom, t_dict["y0"] * self.zoom)
+            self.scene.addItem(proxy)
+
+        # Render interactive images
+        for img_dict in self.interactive_images:
+            if img_dict.get("deleted", False) or img_dict.get("page_num", 0) != self.current_page_num: continue
+
+            qimg = QImage.fromData(img_dict["bytes"])
+            qpix = QPixmap.fromImage(qimg)
+            scaled_pix = qpix.scaled(int(img_dict["w"] * self.zoom), int(img_dict["h"] * self.zoom), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+            item = ResizableImageItem(scaled_pix, img_dict, self.doc, self.current_page_num)
+            item.setPos(img_dict["x0"] * self.zoom, img_dict["y0"] * self.zoom)
+            self.scene.addItem(item)
 
         for b_idx, b in enumerate(self.current_page.get_text("dict").get("blocks", [])):
             if b.get("type") == 0:
@@ -450,17 +676,42 @@ class PDFEditorWindow(QMainWindow):
                     rect = QRectF(x0 * self.zoom, y0 * self.zoom, (x1 - x0) * self.zoom, (y1 - y0) * self.zoom)
                     self.scene.addItem(ClickableRectItem(rect, line_data, self.line_clicked, self.line_dragged))
 
+    def update_table_data(self, t_dict, table):
+        if "cells" not in t_dict: t_dict["cells"] = {}
+        for r in range(table.rowCount()):
+            for c in range(table.columnCount()):
+                item = table.item(r, c)
+                if item: t_dict["cells"][(r, c)] = item.text()
 
     def update_form_field(self, pdf_widget, value):
         pdf_widget.field_value = value
         pdf_widget.update()
 
     def line_clicked(self, line_data, rect):
-        self.floating_editor.line_data = line_data
-        view_rect = self.view.mapFromScene(rect).boundingRect()
-        padding = 4
-        self.floating_editor.setGeometry(view_rect.x() - padding, view_rect.y() - padding,
-                                         view_rect.width() + padding*2 + 50, view_rect.height() + padding*2)
+        if self.btn_format_painter.isChecked():
+            if self.copied_format is None:
+                self.copied_format = {
+                    "font": line_data["font"],
+                    "size": line_data["size"],
+                    "color": line_data["color"],
+                    "flags": line_data.get("flags", 0)
+                }
+            else:
+                fmt = self.copied_format
+                self.spin_size.setValue(int(round(fmt["size"])))
+                font_name_lower = fmt["font"].lower()
+                self.btn_bold.setChecked("bold" in font_name_lower or fmt["flags"] & 16)
+                self.btn_italic.setChecked("italic" in font_name_lower or fmt["flags"] & 2)
+                if "times" in font_name_lower: self.combo_font.setCurrentText("Times-Roman")
+                elif "cour" in font_name_lower: self.combo_font.setCurrentText("Courier")
+                else: self.combo_font.setCurrentText("Helvetica")
+                rgb = self.int_to_rgb_tuple(fmt["color"])
+                self.current_color = QColor(int(rgb[0]*255), int(rgb[1]*255), int(rgb[2]*255))
+
+                self.apply_changes(line_data["text"], line_data, force_format=True)
+                self.btn_format_painter.setChecked(False)
+                self.copied_format = None
+            return
 
         self.spin_size.setValue(int(round(line_data["size"])))
         font_name_lower = line_data["font"].lower()
@@ -489,12 +740,15 @@ class PDFEditorWindow(QMainWindow):
         self.spin_size.valueChanged.connect(self.update_editor_font)
         self.combo_font.currentTextChanged.connect(self.update_editor_font)
 
+        self.floating_editor.line_data = line_data
+        view_rect = self.view.mapFromScene(rect).boundingRect()
+        padding = 4
+        self.floating_editor.setGeometry(view_rect.x() - padding, view_rect.y() - padding,
+                                         view_rect.width() + padding*2 + 50, view_rect.height() + padding*2)
         font = QFont()
         font.setPointSizeF(line_data["size"] * self.zoom * 0.75)
-
-        font_name_lower = line_data["font"].lower()
-        if "bold" in font_name_lower or line_data["flags"] & 16: font.setBold(True)
-        if "italic" in font_name_lower or line_data["flags"] & 2: font.setItalic(True)
+        if self.btn_bold.isChecked(): font.setBold(True)
+        if self.btn_italic.isChecked(): font.setItalic(True)
         self.floating_editor.setFont(font)
         self.floating_editor.setText(line_data["text"])
         self.floating_editor.show()
@@ -504,10 +758,21 @@ class PDFEditorWindow(QMainWindow):
         name = original_font_name.lower()
         is_bold = "bold" in name or (flags & 16)
         is_italic = "italic" in name or "oblique" in name or (flags & 2)
-        if is_bold and is_italic: return "hebi"
-        elif is_bold: return "hebo"
-        elif is_italic: return "heit"
-        else: return "helv"
+        if "times" in name:
+            if is_bold and is_italic: return "times-bolditalic"
+            elif is_bold: return "times-bold"
+            elif is_italic: return "times-italic"
+            else: return "times-roman"
+        elif "cour" in name:
+            if is_bold and is_italic: return "co-boit"
+            elif is_bold: return "co-bo"
+            elif is_italic: return "co-it"
+            else: return "cour"
+        else:
+            if is_bold and is_italic: return "hebi"
+            elif is_bold: return "hebo"
+            elif is_italic: return "heit"
+            else: return "helv"
 
     def int_to_rgb_tuple(self, color_int):
         b = color_int & 255
@@ -524,7 +789,6 @@ class PDFEditorWindow(QMainWindow):
         self.current_page.apply_redactions()
         new_origin = fitz.Point(line_data["origin"][0] + pdf_dx, line_data["origin"][1] + pdf_dy)
 
-        # Bypass UI styling and use explicit original styling for drags
         font_name = line_data["font"]
         font_size = line_data["size"]
         flags = line_data.get("flags", 0)
@@ -554,11 +818,9 @@ class PDFEditorWindow(QMainWindow):
 
         self.render_page()
 
-
-    def apply_changes(self, new_text, line_data):
+    def apply_changes(self, new_text, line_data, force_format=False):
         if not self.doc or not line_data: return
 
-        # Check formatting states from the UI
         flags = 0
         if self.btn_bold.isChecked(): flags |= 16
         if self.btn_italic.isChecked(): flags |= 2
@@ -567,9 +829,8 @@ class PDFEditorWindow(QMainWindow):
         ui_color = (self.current_color.redF(), self.current_color.greenF(), self.current_color.blueF())
         rgb = self.int_to_rgb_tuple(line_data["color"])
 
-        # Determine if anything changed (text content OR formatting)
         text_changed = new_text.strip() != line_data["text"].strip()
-        fmt_changed = (
+        fmt_changed = force_format or (
             flags != line_data.get("flags", 0) or
             abs(ui_font_size - float(line_data["size"])) > 0.6 or
             abs(ui_color[0] - rgb[0]) > 0.01 or
@@ -593,7 +854,6 @@ class PDFEditorWindow(QMainWindow):
         self.insert_text_with_font(fitz.Point(line_data["origin"]), new_text, line_data)
 
     def insert_text_with_font(self, origin, text, line_data):
-        # Override original line_data with UI selections
         font_size = float(self.spin_size.value())
         color = (self.current_color.redF(), self.current_color.greenF(), self.current_color.blueF())
 
@@ -601,7 +861,6 @@ class PDFEditorWindow(QMainWindow):
         if self.btn_bold.isChecked(): flags |= 16
         if self.btn_italic.isChecked(): flags |= 2
 
-        # Base font handling based on UI combobox
         combo_val = self.combo_font.currentText()
         if combo_val == "Helvetica": base_f = "helv"
         elif combo_val == "Times-Roman": base_f = "times-roman"
@@ -610,7 +869,6 @@ class PDFEditorWindow(QMainWindow):
         orig_font_name = line_data.get("font", "helv")
         registered_font_name = None
 
-        # Use exact original font if the family wasn't radically changed
         if base_f in orig_font_name.lower() and not line_data.get("is_new", False):
             try:
                 for f in self.doc.get_page_fonts(self.current_page_num):
@@ -625,13 +883,11 @@ class PDFEditorWindow(QMainWindow):
         if not registered_font_name:
             registered_font_name = self.get_fallback_font(base_f, flags)
 
-        # Draw the main text
         try:
             self.current_page.insert_text(origin, text, fontsize=font_size, fontname=registered_font_name, color=color)
         except Exception:
             self.current_page.insert_text(origin, text, fontsize=font_size, fontname=self.get_fallback_font(base_f, flags), color=color)
 
-        # Apply Annotations (Underline, Strike, Background Color)
         if self.btn_underline.isChecked() or self.btn_strike.isChecked() or self.current_bg_color:
             approx_width = len(text) * font_size * 0.55
             bbox = fitz.Rect(origin.x, origin.y - font_size, origin.x + approx_width, origin.y + font_size * 0.3)
@@ -647,7 +903,6 @@ class PDFEditorWindow(QMainWindow):
                 self.current_page.draw_line(fitz.Point(bbox.x0, origin.y - font_size * 0.3), fitz.Point(bbox.x1, origin.y - font_size * 0.3), color=color, width=1)
 
         self.render_page()
-
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
