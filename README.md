@@ -1,6 +1,6 @@
 # pdfEditor
 
-A local application to edit PDF text in a WYSIWYG manner. This app is designed to run on Windows, offering native UI via PyQt6. It allows you to select text blocks in a PDF, edit the text, prompt for font replacements (if the exact font isn't embedded or available), and push subsequent elements down if the text expands.
+A local application to edit PDF text in a WYSIWYG manner. This app is designed to run on Windows, offering native UI via PyQt6. It allows you to select text blocks in a PDF, edit the text, and apply formatting.
 
 ## Prerequisites
 
@@ -34,6 +34,10 @@ python pdf_editor.py
 
 ## Features
 
-- **WYSIWYG Editing:** Click directly on text blocks in the PDF canvas to edit them.
-- **Font Replacement:** If the PDF uses subsetted or proprietary fonts, the app allows you to select a local `.ttf` or `.otf` font file from your system to ensure correct rendering.
-- **Text Reflowing:** If the newly added text expands the paragraph's height, the application will calculate the difference and alert you. Note that automatically pushing subsequent PDF elements (text, images, paths) down the page is highly complex due to the absolute positioning nature of PDFs, and the current implementation warns of structural shifts.
+- **In-Place WYSIWYG Editing:** Click directly on text lines in the PDF canvas to edit them in-place with a floating text box perfectly aligned over the original text.
+- **Advanced Text Formatting:** Apply Bold, Italic, Underline, Strikethrough, Text Color, Background Color, and Font Size natively.
+- **Drag and Drop:** Move text elements around the page using the mouse.
+- **Form Filling:** Automatically detects and overlays interactive PDF forms (text fields, checkboxes) for easy filling.
+- **Signatures:** Insert image-based signatures directly onto the PDF canvas.
+- **Tabular Tools:** Draw tables from scratch and toggle visual alignment gridlines.
+- **Font Handling:** Extracts and preserves original embedded PDF fonts where possible, safely routing unknown styling to default PyMuPDF Base-14 internal equivalents to ensure robust rendering.

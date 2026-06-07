@@ -4,12 +4,13 @@ import fitz  # PyMuPDF
 import tempfile
 import shutil
 from PyQt6.QtWidgets import (
+    QColorDialog, QToolBar, QComboBox, QSpinBox, QLineEdit, QCheckBox,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QTextEdit,
     QMessageBox, QGraphicsView, QGraphicsScene,
     QGraphicsPixmapItem, QGraphicsRectItem, QInputDialog
 )
-from PyQt6.QtGui import QPixmap, QImage, QColor, QPen, QBrush, QFont
+from PyQt6.QtGui import QPixmap, QImage, QColor, QPen, QBrush, QFont, QTextCharFormat
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QPointF
 
 class FloatingEditor(QTextEdit):
@@ -65,22 +66,29 @@ class ClickableRectItem(QGraphicsRectItem):
 
     def mouseMoveEvent(self, event):
         if event.buttons() & Qt.MouseButton.LeftButton:
-            self._is_dragging = True
+            if self._start_pos and (self.pos() - self._start_pos).manhattanLength() > QApplication.startDragDistance():
+                self._is_dragging = True
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        is_drag = False
         if event.button() == Qt.MouseButton.LeftButton:
-            if not self._is_dragging:
-                self.callback(self.line_data, self.sceneBoundingRect())
-            else:
+            if self._is_dragging:
                 end_pos = self.pos()
                 if self._start_pos:
                     dx = end_pos.x() - self._start_pos.x()
                     dy = end_pos.y() - self._start_pos.y()
                     if dx != 0 or dy != 0:
-                        self.drag_callback(self.line_data, dx, dy)
+                        is_drag = True
+
         super().mouseReleaseEvent(event)
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            if not self._is_dragging:
+                self.callback(self.line_data, self.sceneBoundingRect())
+            elif is_drag:
+                self.drag_callback(self.line_data, dx, dy)
 
 class PDFGraphicsView(QGraphicsView):
     def __init__(self, scene, parent=None):
@@ -89,9 +97,13 @@ class PDFGraphicsView(QGraphicsView):
 
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
-        if not event.isAccepted() and self.parent_window and self.parent_window.btn_add_text.isChecked():
+        if not event.isAccepted() and self.parent_window:
             scene_pos = self.mapToScene(event.pos())
-            self.parent_window.add_new_text(scene_pos)
+            if self.parent_window.btn_add_text.isChecked():
+                self.parent_window.add_new_text(scene_pos)
+            elif self.parent_window.btn_add_signature.isChecked():
+                self.parent_window.add_signature(scene_pos)
+
 
 
 class PDFEditorWindow(QMainWindow):
@@ -107,6 +119,7 @@ class PDFEditorWindow(QMainWindow):
         self.zoom = 2.0
         self.temp_dir = tempfile.mkdtemp()
         self.grid_items = []
+        self.form_widgets = []
 
         self.init_ui()
 
@@ -152,6 +165,62 @@ class PDFEditorWindow(QMainWindow):
 
         main_layout.addLayout(toolbar_layout)
 
+                # Formatting Toolbar
+        self.format_toolbar = QToolBar("Formatting")
+        self.addToolBar(self.format_toolbar)
+
+        self.combo_font = QComboBox()
+        self.combo_font.addItems(["Helvetica", "Times-Roman", "Courier"])
+        self.combo_font.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.format_toolbar.addWidget(self.combo_font)
+
+        self.spin_size = QSpinBox()
+        self.spin_size.setRange(1, 100)
+        self.spin_size.setValue(11)
+        self.spin_size.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.format_toolbar.addWidget(self.spin_size)
+
+        self.btn_bold = QPushButton("B")
+        self.btn_bold.setCheckable(True)
+        self.btn_bold.setStyleSheet("font-weight: bold;")
+        self.btn_bold.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.format_toolbar.addWidget(self.btn_bold)
+
+        self.btn_italic = QPushButton("I")
+        self.btn_italic.setCheckable(True)
+        self.btn_italic.setStyleSheet("font-style: italic;")
+        self.btn_italic.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.format_toolbar.addWidget(self.btn_italic)
+
+        self.btn_underline = QPushButton("U")
+        self.btn_underline.setCheckable(True)
+        self.btn_underline.setStyleSheet("text-decoration: underline;")
+        self.btn_underline.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.format_toolbar.addWidget(self.btn_underline)
+
+        self.btn_strike = QPushButton("S")
+        self.btn_strike.setCheckable(True)
+        self.btn_strike.setStyleSheet("text-decoration: line-through;")
+        self.btn_strike.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.format_toolbar.addWidget(self.btn_strike)
+
+        self.btn_color = QPushButton("Color")
+        self.btn_color.clicked.connect(self.choose_color)
+        self.btn_color.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.format_toolbar.addWidget(self.btn_color)
+        self.current_color = QColor(0, 0, 0)
+
+        self.btn_bg_color = QPushButton("BG Color")
+        self.btn_bg_color.clicked.connect(self.choose_bg_color)
+        self.btn_bg_color.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.format_toolbar.addWidget(self.btn_bg_color)
+        self.current_bg_color = None
+
+        self.btn_add_signature = QPushButton("Signature")
+        self.btn_add_signature.setCheckable(True)
+        self.btn_add_signature.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.format_toolbar.addWidget(self.btn_add_signature)
+
         self.scene = QGraphicsScene()
         self.view = PDFGraphicsView(self.scene)
         self.view.parent_window = self
@@ -159,6 +228,34 @@ class PDFEditorWindow(QMainWindow):
 
         self.floating_editor = FloatingEditor(self.view)
         self.floating_editor.editing_finished.connect(self.apply_changes)
+
+    def choose_color(self):
+        color = QColorDialog.getColor(self.current_color, self)
+        if color.isValid():
+            self.current_color = color
+            self.update_editor_format()
+
+    def choose_bg_color(self):
+        color = QColorDialog.getColor(Qt.GlobalColor.white, self)
+        if color.isValid():
+            self.current_bg_color = color
+            self.update_editor_format()
+
+    def update_editor_format(self):
+        if not self.floating_editor.isVisible(): return
+        fmt = QTextCharFormat()
+        fmt.setForeground(self.current_color)
+        if self.current_bg_color:
+            fmt.setBackground(self.current_bg_color)
+        self.floating_editor.mergeCurrentCharFormat(fmt)
+
+    def update_editor_font(self):
+        if not self.floating_editor.isVisible(): return
+        font = self.floating_editor.font()
+        font.setBold(self.btn_bold.isChecked())
+        font.setItalic(self.btn_italic.isChecked())
+        font.setPointSizeF(self.spin_size.value() * self.zoom * 0.75)
+        self.floating_editor.setFont(font)
 
     def open_pdf(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
@@ -203,6 +300,7 @@ class PDFEditorWindow(QMainWindow):
             for item in self.grid_items:
                 self.scene.removeItem(item)
             self.grid_items = []
+        self.form_widgets = []
 
     def insert_table(self):
         if not self.doc: return
@@ -228,6 +326,22 @@ class PDFEditorWindow(QMainWindow):
 
         self.render_page()
         self.btn_toggle_grid.setChecked(True)
+
+
+    def add_signature(self, scene_pos):
+        if not self.doc: return
+        self.btn_add_signature.setChecked(False) # reset mode
+
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select Signature Image", "", "Images (*.png *.jpg *.jpeg)")
+        if not filepath: return
+
+        # Unscale coordinates
+        pdf_x = scene_pos.x() / self.zoom
+        pdf_y = scene_pos.y() / self.zoom
+
+        rect = fitz.Rect(pdf_x, pdf_y, pdf_x + 150, pdf_y + 50)
+        self.current_page.insert_image(rect, filename=filepath)
+        self.render_page()
 
     def add_new_text(self, scene_pos):
         if not self.doc: return
@@ -266,6 +380,7 @@ class PDFEditorWindow(QMainWindow):
         self.lbl_page.setText(f"Page: {self.current_page_num + 1} / {len(self.doc)}")
         self.scene.clear()
         self.grid_items = []
+        self.form_widgets = []
         if self.btn_toggle_grid.isChecked():
             self.toggle_grid(True)
 
@@ -275,6 +390,44 @@ class PDFEditorWindow(QMainWindow):
         img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
         self.scene.addItem(QGraphicsPixmapItem(QPixmap.fromImage(img)))
         self.scene.setSceneRect(0.0, 0.0, float(pix.width), float(pix.height))
+
+        # Render interactive form fields
+        for proxy in self.form_widgets:
+            self.scene.removeItem(proxy)
+        self.form_widgets = []
+
+        for widget in self.current_page.widgets():
+            x0, y0, x1, y1 = widget.rect
+            ui_x = x0 * self.zoom
+            ui_y = y0 * self.zoom
+            ui_w = (x1 - x0) * self.zoom
+            ui_h = (y1 - y0) * self.zoom
+
+            if widget.field_type == fitz.PDF_WIDGET_TYPE_TEXT:
+                ui_elem = QLineEdit()
+                ui_elem.setFixedSize(int(ui_w), int(ui_h))
+                ui_elem.setText(widget.field_value)
+                ui_elem.textChanged.connect(lambda text, w=widget: self.update_form_field(w, text))
+                proxy = self.scene.addWidget(ui_elem)
+                proxy.setPos(ui_x, ui_y)
+                self.form_widgets.append(proxy)
+
+            elif widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
+                ui_elem = QCheckBox()
+                ui_elem.setFixedSize(int(ui_w), int(ui_h))
+                ui_elem.setChecked(widget.field_value)
+                ui_elem.stateChanged.connect(lambda state, w=widget: self.update_form_field(w, bool(state)))
+                proxy = self.scene.addWidget(ui_elem)
+                proxy.setPos(ui_x, ui_y)
+                self.form_widgets.append(proxy)
+
+            elif widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
+                ui_elem = QCheckBox(self.view)
+                ui_elem.setGeometry(int(ui_x), int(ui_y), int(ui_w), int(ui_h))
+                ui_elem.setChecked(widget.field_value)
+                ui_elem.stateChanged.connect(lambda state, w=widget: self.update_form_field(w, bool(state)))
+                ui_elem.show()
+                self.form_widgets.append(ui_elem)
 
         for b_idx, b in enumerate(self.current_page.get_text("dict").get("blocks", [])):
             if b.get("type") == 0:
@@ -297,14 +450,48 @@ class PDFEditorWindow(QMainWindow):
                     rect = QRectF(x0 * self.zoom, y0 * self.zoom, (x1 - x0) * self.zoom, (y1 - y0) * self.zoom)
                     self.scene.addItem(ClickableRectItem(rect, line_data, self.line_clicked, self.line_dragged))
 
+
+    def update_form_field(self, pdf_widget, value):
+        pdf_widget.field_value = value
+        pdf_widget.update()
+
     def line_clicked(self, line_data, rect):
         self.floating_editor.line_data = line_data
         view_rect = self.view.mapFromScene(rect).boundingRect()
         padding = 4
         self.floating_editor.setGeometry(view_rect.x() - padding, view_rect.y() - padding,
                                          view_rect.width() + padding*2 + 50, view_rect.height() + padding*2)
+
+        self.spin_size.setValue(int(round(line_data["size"])))
+        font_name_lower = line_data["font"].lower()
+        self.btn_bold.setChecked("bold" in font_name_lower or line_data["flags"] & 16)
+        self.btn_italic.setChecked("italic" in font_name_lower or line_data["flags"] & 2)
+
+        if "times" in font_name_lower: self.combo_font.setCurrentText("Times-Roman")
+        elif "cour" in font_name_lower: self.combo_font.setCurrentText("Courier")
+        else: self.combo_font.setCurrentText("Helvetica")
+
+        rgb = self.int_to_rgb_tuple(line_data.get("color", 0))
+        self.current_color = QColor(int(rgb[0]*255), int(rgb[1]*255), int(rgb[2]*255))
+        self.current_bg_color = None
+
+        try: self.btn_bold.clicked.disconnect()
+        except: pass
+        try: self.btn_italic.clicked.disconnect()
+        except: pass
+        try: self.spin_size.valueChanged.disconnect()
+        except: pass
+        try: self.combo_font.currentTextChanged.disconnect()
+        except: pass
+
+        self.btn_bold.clicked.connect(self.update_editor_font)
+        self.btn_italic.clicked.connect(self.update_editor_font)
+        self.spin_size.valueChanged.connect(self.update_editor_font)
+        self.combo_font.currentTextChanged.connect(self.update_editor_font)
+
         font = QFont()
         font.setPointSizeF(line_data["size"] * self.zoom * 0.75)
+
         font_name_lower = line_data["font"].lower()
         if "bold" in font_name_lower or line_data["flags"] & 16: font.setBold(True)
         if "italic" in font_name_lower or line_data["flags"] & 2: font.setItalic(True)
@@ -336,21 +523,8 @@ class PDFEditorWindow(QMainWindow):
         self.current_page.add_redact_annot(rect)
         self.current_page.apply_redactions()
         new_origin = fitz.Point(line_data["origin"][0] + pdf_dx, line_data["origin"][1] + pdf_dy)
-        self.insert_text_with_font(new_origin, line_data["text"], line_data)
 
-    def apply_changes(self, new_text, line_data):
-        if not self.doc or not line_data: return
-        if new_text.strip() == line_data["text"].strip(): return
-
-        is_new = line_data.get("is_new", False)
-        if not is_new:
-            rect = fitz.Rect(line_data["bbox"])
-            self.current_page.add_redact_annot(rect)
-            self.current_page.apply_redactions()
-
-        self.insert_text_with_font(fitz.Point(line_data["origin"]), new_text, line_data)
-
-    def insert_text_with_font(self, origin, text, line_data):
+        # Bypass UI styling and use explicit original styling for drags
         font_name = line_data["font"]
         font_size = line_data["size"]
         flags = line_data.get("flags", 0)
@@ -368,26 +542,112 @@ class PDFEditorWindow(QMainWindow):
                         extracted_font = fitz.Font(fontbuffer=font_buffer)
                         registered_font_name = self.current_page.insert_font(fontname="F0", fontbuffer=extracted_font.buffer)
                         break
-            except Exception:
-                pass
-
-            if not registered_font_name:
-                reply = QMessageBox.question(self, 'Font Check', f'Original font "{font_name}" is subsetted or proprietary.\\nWould you like to select a local .ttf/.otf file? If No, a standard substitute will be used.', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-                if reply == QMessageBox.StandardButton.Yes:
-                    local_font_file, _ = QFileDialog.getOpenFileName(self, "Select Font File", "", "Font Files (*.ttf *.otf)")
-                    if local_font_file:
-                        try:
-                            registered_font_name = self.current_page.insert_font(fontfile=local_font_file, fontname="F0")
-                        except Exception: pass
+            except Exception: pass
 
         if not registered_font_name:
             registered_font_name = self.get_fallback_font(font_name, flags)
 
         try:
+            self.current_page.insert_text(new_origin, line_data["text"], fontsize=font_size, fontname=registered_font_name, color=color)
+        except Exception:
+            self.current_page.insert_text(new_origin, line_data["text"], fontsize=font_size, fontname=self.get_fallback_font(font_name, flags), color=color)
+
+        self.render_page()
+
+
+    def apply_changes(self, new_text, line_data):
+        if not self.doc or not line_data: return
+
+        # Check formatting states from the UI
+        flags = 0
+        if self.btn_bold.isChecked(): flags |= 16
+        if self.btn_italic.isChecked(): flags |= 2
+
+        ui_font_size = float(self.spin_size.value())
+        ui_color = (self.current_color.redF(), self.current_color.greenF(), self.current_color.blueF())
+        rgb = self.int_to_rgb_tuple(line_data["color"])
+
+        # Determine if anything changed (text content OR formatting)
+        text_changed = new_text.strip() != line_data["text"].strip()
+        fmt_changed = (
+            flags != line_data.get("flags", 0) or
+            abs(ui_font_size - float(line_data["size"])) > 0.6 or
+            abs(ui_color[0] - rgb[0]) > 0.01 or
+            abs(ui_color[1] - rgb[1]) > 0.01 or
+            abs(ui_color[2] - rgb[2]) > 0.01 or
+            self.btn_underline.isChecked() or
+            self.btn_strike.isChecked() or
+            self.current_bg_color is not None
+        )
+
+        is_new = line_data.get("is_new", False)
+
+        if not text_changed and not fmt_changed and not is_new:
+            return
+
+        if not is_new:
+            rect = fitz.Rect(line_data["bbox"])
+            self.current_page.add_redact_annot(rect)
+            self.current_page.apply_redactions()
+
+        self.insert_text_with_font(fitz.Point(line_data["origin"]), new_text, line_data)
+
+    def insert_text_with_font(self, origin, text, line_data):
+        # Override original line_data with UI selections
+        font_size = float(self.spin_size.value())
+        color = (self.current_color.redF(), self.current_color.greenF(), self.current_color.blueF())
+
+        flags = 0
+        if self.btn_bold.isChecked(): flags |= 16
+        if self.btn_italic.isChecked(): flags |= 2
+
+        # Base font handling based on UI combobox
+        combo_val = self.combo_font.currentText()
+        if combo_val == "Helvetica": base_f = "helv"
+        elif combo_val == "Times-Roman": base_f = "times-roman"
+        else: base_f = "cour"
+
+        orig_font_name = line_data.get("font", "helv")
+        registered_font_name = None
+
+        # Use exact original font if the family wasn't radically changed
+        if base_f in orig_font_name.lower() and not line_data.get("is_new", False):
+            try:
+                for f in self.doc.get_page_fonts(self.current_page_num):
+                    if orig_font_name in f[3]:
+                        font_buffer = self.doc.extract_font(f[0])[3]
+                        extracted_font = fitz.Font(fontbuffer=font_buffer)
+                        registered_font_name = self.current_page.insert_font(fontname="F0", fontbuffer=extracted_font.buffer)
+                        break
+            except Exception:
+                pass
+
+        if not registered_font_name:
+            registered_font_name = self.get_fallback_font(base_f, flags)
+
+        # Draw the main text
+        try:
             self.current_page.insert_text(origin, text, fontsize=font_size, fontname=registered_font_name, color=color)
         except Exception:
-            self.current_page.insert_text(origin, text, fontsize=font_size, fontname=self.get_fallback_font(font_name, flags), color=color)
+            self.current_page.insert_text(origin, text, fontsize=font_size, fontname=self.get_fallback_font(base_f, flags), color=color)
+
+        # Apply Annotations (Underline, Strike, Background Color)
+        if self.btn_underline.isChecked() or self.btn_strike.isChecked() or self.current_bg_color:
+            approx_width = len(text) * font_size * 0.55
+            bbox = fitz.Rect(origin.x, origin.y - font_size, origin.x + approx_width, origin.y + font_size * 0.3)
+
+            if self.current_bg_color:
+                bg = (self.current_bg_color.redF(), self.current_bg_color.greenF(), self.current_bg_color.blueF())
+                self.current_page.draw_rect(bbox, color=None, fill=bg, fill_opacity=0.3)
+
+            if self.btn_underline.isChecked():
+                self.current_page.draw_line(fitz.Point(bbox.x0, origin.y + 2), fitz.Point(bbox.x1, origin.y + 2), color=color, width=1)
+
+            if self.btn_strike.isChecked():
+                self.current_page.draw_line(fitz.Point(bbox.x0, origin.y - font_size * 0.3), fitz.Point(bbox.x1, origin.y - font_size * 0.3), color=color, width=1)
+
         self.render_page()
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
