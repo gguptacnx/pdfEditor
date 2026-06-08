@@ -63,13 +63,49 @@ class ChangeFormatCommand(QUndoCommand):
         self.new_format = new_format
 
     def _apply_format(self, fmt: dict):
-        if 'font' in fmt:
-            self.item.setFont(fmt['font'])
-        if 'color' in fmt:
-            self.item.setDefaultTextColor(fmt['color'])
+        # We must use QTextCursor to override the rich-text HTML properties
+        # generated when the user types inside the QGraphicsTextItem.
+        from PyQt6.QtGui import QTextCursor, QTextCharFormat
+        from PyQt6.QtWidgets import QGraphicsTextItem
+
+        if isinstance(self.item, QGraphicsTextItem):
+            cursor = self.item.textCursor()
+            char_format = QTextCharFormat()
+
+            if 'font' in fmt:
+                char_format.setFont(fmt['font'])
+                self.item.setFont(fmt['font']) # Update base font too
+            if 'color' in fmt:
+                char_format.setForeground(fmt['color'])
+                self.item.setDefaultTextColor(fmt['color'])
+
+            # Apply to entire text
+            cursor.select(QTextCursor.SelectionType.Document)
+            cursor.mergeCharFormat(char_format)
+            self.item.setTextCursor(cursor)
 
     def redo(self):
         self._apply_format(self.new_format)
 
     def undo(self):
         self._apply_format(self.old_format)
+
+class AddMaskAndTextCommand(QUndoCommand):
+    """Command to add a redaction mask and an editable text block simultaneously."""
+    def __init__(self, scene: QGraphicsScene, mask_item: QGraphicsItem, text_item: QGraphicsItem, description: str = "Edit Existing Text"):
+        super().__init__(description)
+        self.scene = scene
+        self.mask_item = mask_item
+        self.text_item = text_item
+
+    def redo(self):
+        if self.mask_item not in self.scene.items():
+            self.scene.addItem(self.mask_item)
+        if self.text_item not in self.scene.items():
+            self.scene.addItem(self.text_item)
+
+    def undo(self):
+        if self.mask_item in self.scene.items():
+            self.scene.removeItem(self.mask_item)
+        if self.text_item in self.scene.items():
+            self.scene.removeItem(self.text_item)

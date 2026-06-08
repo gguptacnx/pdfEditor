@@ -1,6 +1,5 @@
-PyMuPDF
 PyQt6
-requests
+PyMuPDF
 pandas
 pillow
 fpdf2

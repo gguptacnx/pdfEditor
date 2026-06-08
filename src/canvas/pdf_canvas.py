@@ -6,6 +6,8 @@ class PDFGraphicsScene(QGraphicsScene):
     """Custom QGraphicsScene to handle PDF rendering and interaction."""
     # Signal emitted when a new text item has finished being edited for the first time
     text_item_added = pyqtSignal(QGraphicsTextItem)
+    # Signal emitted when double clicking on the canvas
+    canvas_double_clicked = pyqtSignal(object) # passes QPointF scene_pos
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,6 +40,13 @@ class PDFGraphicsView(QGraphicsView):
             self.setCursor(Qt.CursorShape.IBeamCursor)
         else:
             self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.current_tool == "select":
+            scene_pos = self.mapToScene(event.pos())
+            if isinstance(self.scene(), PDFGraphicsScene):
+                self.scene().canvas_double_clicked.emit(scene_pos)
+        super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event):
         if self.current_tool == "add_text" and event.button() == Qt.MouseButton.LeftButton:
