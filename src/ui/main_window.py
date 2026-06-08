@@ -63,142 +63,193 @@ class MainWindow(QMainWindow):
 
     def _init_formatting_toolbar(self):
         """Initialize the UI elements in the formatting toolbar programmatically."""
-        from PyQt6.QtWidgets import QComboBox, QSpinBox, QPushButton
+        from PyQt6.QtWidgets import QToolButton, QMenu, QWidgetAction, QWidget, QVBoxLayout, QLabel, QPushButton, QGridLayout, QHBoxLayout
+        from PyQt6.QtCore import Qt
 
-        # 1. Add Text Tool
-        self.addTextButton = QPushButton("Add Text")
-        self.addTextButton.setCheckable(True)
-        self.addTextButton.setToolTip("Click to add text to the PDF")
-        self.addTextButton.toggled.connect(self._on_add_text_toggled)
-        self.toolBar.addWidget(self.addTextButton)
+        self.toolBar.setMovable(False)
+        self.toolBar.setStyleSheet("QToolBar { background-color: white; border-bottom: 1px solid #ccc; } QToolButton { padding: 5px 10px; border: 1px solid transparent; border-radius: 4px; } QToolButton:hover { border: 1px solid #0078D4; background-color: #E5F1FB; } QToolButton:checked { border: 1px solid #0078D4; background-color: #CCE4F7; }")
 
-        self.toolBar.addSeparator()
+        # 1. Text Tool & Search
+        self.btn_text = QToolButton()
+        self.btn_text.setText("Text")
+        self.btn_text.setToolTip("Add text. Change or delete existing text.")
+        self.btn_text.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.btn_text.setCheckable(True)
+        menu_text = QMenu(self)
+        action_find = menu_text.addAction("Find & Replace")
+        self.btn_text.setMenu(menu_text)
+        self.toolBar.addWidget(self.btn_text)
 
-        # 2. Font Family
-        self.fontFamilyComboBox = QComboBox()
-        base_fonts = ["Helvetica", "Times-Roman", "Courier", "Symbol", "ZapfDingbats"]
-        self.fontFamilyComboBox.addItems(base_fonts)
-        self.fontFamilyComboBox.setToolTip("Font Family")
-        self.toolBar.addWidget(self.fontFamilyComboBox)
+        # 2. Links Tool
+        self.btn_links = QToolButton()
+        self.btn_links.setText("Links")
+        self.btn_links.setToolTip("Add links. Change existing links.")
+        self.btn_links.setCheckable(True)
+        self.toolBar.addWidget(self.btn_links)
 
-        # 3. Font Size
-        self.fontSizeSpinBox = QSpinBox()
-        self.fontSizeSpinBox.setRange(6, 144)
-        self.fontSizeSpinBox.setValue(12)
-        self.fontSizeSpinBox.setToolTip("Font Size")
-        self.toolBar.addWidget(self.fontSizeSpinBox)
+        # 3. Interactive Forms Tool
+        self.btn_forms = QToolButton()
+        self.btn_forms.setText("Forms")
+        self.btn_forms.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_forms = QMenu(self)
+        menu_forms.setStyleSheet("QMenu::item { padding: 5px 20px; }")
 
-        self.toolBar.addSeparator()
+        # Form Sections (Using custom QWidgetActions to get layout headers)
+        w_forms = QWidget()
+        l_forms = QVBoxLayout(w_forms)
+        l_forms.setContentsMargins(5, 5, 5, 5)
 
-        # 4. Bold, Italic, Underline
-        self.boldButton = QPushButton("B")
-        self.boldButton.setCheckable(True)
-        self.toolBar.addWidget(self.boldButton)
+        lbl1 = QLabel("ADD TEXT AND SYMBOLS")
+        lbl1.setStyleSheet("color: gray; font-size: 10px; font-weight: bold;")
+        l_forms.addWidget(lbl1)
 
-        self.italicButton = QPushButton("I")
-        self.italicButton.setCheckable(True)
-        self.toolBar.addWidget(self.italicButton)
+        # Symbols row
+        row1 = QHBoxLayout()
+        row1.addWidget(QPushButton("IA"))
+        row1.addWidget(QPushButton("X"))
+        row1.addWidget(QPushButton("✓"))
+        row1.addWidget(QPushButton("●"))
+        l_forms.addLayout(row1)
 
-        self.underlineButton = QPushButton("U")
-        self.underlineButton.setCheckable(True)
-        self.toolBar.addWidget(self.underlineButton)
+        lbl2 = QLabel("ADD NEW FORM FIELDS")
+        lbl2.setStyleSheet("color: gray; font-size: 10px; font-weight: bold; margin-top: 10px;")
+        l_forms.addWidget(lbl2)
 
-        self.toolBar.addSeparator()
+        grid = QGridLayout()
+        grid.addWidget(QPushButton("Text"), 0, 0)
+        grid.addWidget(QPushButton("Radio button"), 0, 1)
+        grid.addWidget(QPushButton("Text multiline"), 1, 0)
+        grid.addWidget(QPushButton("Checkbox"), 1, 1)
+        grid.addWidget(QPushButton("Drop-down list"), 2, 0)
+        grid.addWidget(QPushButton("Signature box"), 2, 1)
+        l_forms.addLayout(grid)
 
-        # 5. Color & Opacity
-        self.colorButton = QPushButton("Color")
-        self.toolBar.addWidget(self.colorButton)
+        lbl3 = QLabel("CHANGE EXISTING FORM FIELDS")
+        lbl3.setStyleSheet("color: gray; font-size: 10px; font-weight: bold; margin-top: 10px;")
+        l_forms.addWidget(lbl3)
+        l_forms.addWidget(QPushButton("Form Edit mode"))
+        l_forms.addWidget(QPushButton("Change tab order"))
 
-        self.opacitySpinBox = QSpinBox()
-        self.opacitySpinBox.setRange(0, 100)
-        self.opacitySpinBox.setValue(100)
-        self.opacitySpinBox.setSuffix("%")
-        self.opacitySpinBox.setToolTip("Opacity")
-        self.toolBar.addWidget(self.opacitySpinBox)
+        wa_forms = QWidgetAction(self)
+        wa_forms.setDefaultWidget(w_forms)
+        menu_forms.addAction(wa_forms)
+        self.btn_forms.setMenu(menu_forms)
+        self.toolBar.addWidget(self.btn_forms)
 
-        self.toolBar.addSeparator()
+        # 4. Images & Stamps Tool
+        self.btn_images = QToolButton()
+        self.btn_images.setText("Images")
+        self.btn_images.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_images = QMenu(self)
+        w_images = QWidget()
+        l_images = QVBoxLayout(w_images)
+        lbl_img = QLabel("[ PREVIEW BOX: DRAFT X ]")
+        lbl_img.setStyleSheet("color: red; border: 1px solid red; padding: 10px; text-align: center;")
+        l_images.addWidget(lbl_img)
+        l_images.addWidget(QPushButton("+ New Image"))
+        l_images.addWidget(QPushButton("Delete existing image"))
+        l_images.addWidget(QPushButton("+ New Stamp"))
+        wa_images = QWidgetAction(self)
+        wa_images.setDefaultWidget(w_images)
+        menu_images.addAction(wa_images)
+        self.btn_images.setMenu(menu_images)
+        self.toolBar.addWidget(self.btn_images)
 
-        # 6. Format Painter
-        self.formatPainterButton = QPushButton("Format Painter")
-        self.formatPainterButton.setCheckable(True)
-        self.toolBar.addWidget(self.formatPainterButton)
+        # 5. Sign Tool
+        self.btn_sign = QToolButton()
+        self.btn_sign.setText("Sign")
+        self.btn_sign.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_sign = QMenu(self)
+        w_sign = QWidget()
+        l_sign = QVBoxLayout(w_sign)
+        lbl_sign = QLabel("[ SIGNATURE PREVIEW: Govind ]")
+        l_sign.addWidget(lbl_sign)
+        l_sign.addWidget(QPushButton("+ New Signature"))
+        wa_sign = QWidgetAction(self)
+        wa_sign.setDefaultWidget(w_sign)
+        menu_sign.addAction(wa_sign)
+        self.btn_sign.setMenu(menu_sign)
+        self.toolBar.addWidget(self.btn_sign)
 
-        self.toolBar.addSeparator()
+        # 6. Whiteout Tool
+        self.btn_whiteout = QToolButton()
+        self.btn_whiteout.setText("Whiteout")
+        self.btn_whiteout.setToolTip("Whiteout")
+        self.btn_whiteout.setCheckable(True)
+        self.toolBar.addWidget(self.btn_whiteout)
 
-        # 7. Business Features (Conversions & Tools)
-        self.txtToPdfButton = QPushButton("TXT to PDF")
-        self.toolBar.addWidget(self.txtToPdfButton)
+        # 7. Annotate Tool
+        self.btn_annotate = QToolButton()
+        self.btn_annotate.setText("Annotate")
+        self.btn_annotate.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_annotate = QMenu(self)
+        w_ann = QWidget()
+        l_ann = QVBoxLayout(w_ann)
+        l_ann.addWidget(QPushButton("Show annotations (Toggle)"))
+        l_ann.addWidget(QLabel("TEXT"))
+        l_ann.addWidget(QPushButton("Strike out [Colors]"))
+        l_ann.addWidget(QPushButton("Highlight [Colors]"))
+        l_ann.addWidget(QPushButton("Underline [Colors]"))
+        l_ann.addWidget(QLabel("FREEHAND"))
+        l_ann.addWidget(QPushButton("Highlight [Colors]"))
+        l_ann.addWidget(QPushButton("Draw [Colors]"))
+        wa_ann = QWidgetAction(self)
+        wa_ann.setDefaultWidget(w_ann)
+        menu_annotate.addAction(wa_ann)
+        self.btn_annotate.setMenu(menu_annotate)
+        self.toolBar.addWidget(self.btn_annotate)
 
-        self.imgToPdfButton = QPushButton("Image to PDF")
-        self.toolBar.addWidget(self.imgToPdfButton)
+        # 8. Shapes Tool
+        self.btn_shapes = QToolButton()
+        self.btn_shapes.setText("Shapes")
+        self.btn_shapes.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_shapes = QMenu(self)
+        menu_shapes.addAction("Ellipse")
+        menu_shapes.addAction("Rectangle")
+        menu_shapes.addAction("Line")
+        menu_shapes.addAction("Arrow")
+        self.btn_shapes.setMenu(menu_shapes)
+        self.toolBar.addWidget(self.btn_shapes)
 
-        self.csvToPdfButton = QPushButton("CSV to PDF")
-        self.toolBar.addWidget(self.csvToPdfButton)
+        # 9. Undo Manager Dialog Tool
+        self.btn_undo_dialog = QToolButton()
+        self.btn_undo_dialog.setText("Undo")
+        self.btn_undo_dialog.clicked.connect(self._show_undo_dialog)
+        self.toolBar.addWidget(self.btn_undo_dialog)
+        self.btn_text.toggled.connect(self._on_add_text_toggled)
 
-        self.printButton = QPushButton("Print")
-        self.toolBar.addWidget(self.printButton)
+    def _show_undo_dialog(self):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QListWidget, QPushButton, QLabel
+        d = QDialog(self)
+        d.setWindowTitle("Undo changes")
+        d.resize(400, 300)
+        l = QVBoxLayout(d)
 
-        self.toggleGridButton = QPushButton("Toggle Grid")
-        self.toggleGridButton.setCheckable(True)
-        self.toolBar.addWidget(self.toggleGridButton)
+        if self.cmd_manager.undo_stack.count() == 0:
+            l.addWidget(QLabel("No changes found"))
+        else:
+            lst = QListWidget()
+            for i in range(self.cmd_manager.undo_stack.count()):
+                cmd = self.cmd_manager.undo_stack.command(i)
+                lst.addItem(f"Action {i+1}: {cmd.actionText()}")
+            l.addWidget(lst)
+            btn = QPushButton("Revert selected")
+            # Logic to roll back stack to selected index will go here
+            l.addWidget(btn)
 
-        self.insertTableButton = QPushButton("Insert Table")
-        self.toolBar.addWidget(self.insertTableButton)
-
-        # Connect Signals
-        self.fontFamilyComboBox.currentTextChanged.connect(self._on_format_changed)
-        self.fontSizeSpinBox.valueChanged.connect(self._on_format_changed)
-        self.boldButton.toggled.connect(self._on_format_changed)
-        self.italicButton.toggled.connect(self._on_format_changed)
-        self.underlineButton.toggled.connect(self._on_format_changed)
-        self.colorButton.clicked.connect(self._on_color_clicked)
-        self.opacitySpinBox.valueChanged.connect(self._on_format_changed)
-        self.formatPainterButton.toggled.connect(self._on_format_painter_toggled)
-        self.txtToPdfButton.clicked.connect(self.convert_txt_to_pdf)
-        self.imgToPdfButton.clicked.connect(self.convert_img_to_pdf)
-        self.csvToPdfButton.clicked.connect(self.convert_csv_to_pdf)
-        self.printButton.clicked.connect(self.print_pdf)
-        self.toggleGridButton.toggled.connect(self.toggle_grid)
-        self.insertTableButton.clicked.connect(self.insert_table)
+        d.exec()
 
     def _on_add_text_toggled(self, checked):
         if checked:
             self.view.set_tool("add_text")
             self.statusbar.showMessage("Add Text Mode: Click anywhere on the canvas to add text.")
-            # Uncheck if format painter is on
-            self.formatPainterButton.setChecked(False)
         else:
             self.view.set_tool("select")
             self.statusbar.showMessage("Select Mode.")
 
     def _on_selection_changed(self):
-        """Syncs the toolbar to the currently selected item."""
-        items = self.scene.selectedItems()
-        if not items:
-            return
-
-        item = items[0]
-        from PyQt6.QtWidgets import QGraphicsTextItem
-        if isinstance(item, QGraphicsTextItem):
-            self._is_formatting_programmatically = True
-
-            # Extract actual formatting from cursor if available
-            cursor = item.textCursor()
-            fmt = cursor.charFormat()
-            font = fmt.font() if fmt.font().family() else item.font()
-            color = fmt.foreground().color() if fmt.foreground().color().isValid() else item.defaultTextColor()
-
-            # Update UI safely without triggering signals
-            idx = self.fontFamilyComboBox.findText(font.family())
-            if idx >= 0: self.fontFamilyComboBox.setCurrentIndex(idx)
-
-            self.fontSizeSpinBox.setValue(font.pointSize())
-            self.boldButton.setChecked(font.bold())
-            self.italicButton.setChecked(font.italic())
-            self.underlineButton.setChecked(font.underline())
-            self.colorButton.setStyleSheet(f"background-color: {color.name()};")
-
-            self._is_formatting_programmatically = False
+        """Syncs the toolbar to the currently selected item. (Disabled until Formatting Toolbar is rebuilt)"""
+        pass
 
     def _get_current_format_dict(self):
         from PyQt6.QtGui import QFont, QColor
@@ -217,33 +268,7 @@ class MainWindow(QMainWindow):
         return {"font": font, "color": color}
 
     def _on_format_changed(self, *args):
-        if getattr(self, '_is_formatting_programmatically', False):
-            return
-
-        items = self.scene.selectedItems()
-        if not items:
-            return
-
-        item = items[0]
-        from PyQt6.QtWidgets import QGraphicsTextItem
-        from src.commands.command_manager import ChangeFormatCommand
-
-        if isinstance(item, QGraphicsTextItem):
-            old_format = {"font": item.font(), "color": item.defaultTextColor()}
-            new_format = self._get_current_format_dict()
-
-            # Recreate QFont object explicitly. There is a PyQt6 bug where pulling from UI elements directly
-            # sometimes doesn't persist through the command stack due to garbage collection bindings.
-            from PyQt6.QtGui import QFont, QColor
-            clean_new_font = QFont(new_format['font'].family(), new_format['font'].pointSize())
-            clean_new_font.setBold(new_format['font'].bold())
-            clean_new_font.setItalic(new_format['font'].italic())
-            clean_new_font.setUnderline(new_format['font'].underline())
-
-            clean_new = {"font": clean_new_font, "color": QColor(new_format['color'])}
-
-            cmd = ChangeFormatCommand(item, old_format, clean_new, "Change Format")
-            self.cmd_manager.push(cmd)
+        pass
 
     def _on_color_clicked(self):
         from PyQt6.QtWidgets import QColorDialog
@@ -415,7 +440,7 @@ class MainWindow(QMainWindow):
         text_item.setFocus()
 
         # Turn off the Add Text toggle button
-        self.addTextButton.setChecked(False)
+        self.btn_text.setChecked(False)
 
     def _on_canvas_double_clicked(self, scene_pos):
         """Extract text from PyMuPDF under the double click and spawn an editor."""
