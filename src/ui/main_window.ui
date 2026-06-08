@@ -50,7 +50,7 @@
   <widget class="QStatusBar" name="statusbar"/>
   <widget class="QToolBar" name="toolBar">
    <property name="windowTitle">
-    <string>toolBar</string>
+    <string>Formatting Toolbar</string>
    </property>
    <attribute name="toolBarArea">
     <enum>TopToolBarArea</enum>
@@ -58,6 +58,91 @@
    <attribute name="toolBarBreak">
     <bool>false</bool>
    </attribute>
+   <widget class="QComboBox" name="fontFamilyComboBox">
+    <property name="toolTip">
+     <string>Font Family</string>
+    </property>
+   </widget>
+   <widget class="QSpinBox" name="fontSizeSpinBox">
+    <property name="toolTip">
+     <string>Font Size</string>
+    </property>
+    <property name="minimum">
+     <number>6</number>
+    </property>
+    <property name="maximum">
+     <number>144</number>
+    </property>
+    <property name="value">
+     <number>12</number>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="boldButton">
+    <property name="text">
+     <string>B</string>
+    </property>
+    <property name="toolTip">
+     <string>Bold</string>
+    </property>
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="italicButton">
+    <property name="text">
+     <string>I</string>
+    </property>
+    <property name="toolTip">
+     <string>Italic</string>
+    </property>
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="underlineButton">
+    <property name="text">
+     <string>U</string>
+    </property>
+    <property name="toolTip">
+     <string>Underline</string>
+    </property>
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="colorButton">
+    <property name="text">
+     <string>Color</string>
+    </property>
+    <property name="toolTip">
+     <string>Text Color</string>
+    </property>
+   </widget>
+   <widget class="QSpinBox" name="opacitySpinBox">
+    <property name="toolTip">
+     <string>Opacity (%)</string>
+    </property>
+    <property name="minimum">
+     <number>0</number>
+    </property>
+    <property name="maximum">
+     <number>100</number>
+    </property>
+    <property name="value">
+     <number>100</number>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="formatPainterButton">
+    <property name="text">
+     <string>Format Painter</string>
+    </property>
+    <property name="toolTip">
+     <string>Copy and apply formatting</string>
+    </property>
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+   </widget>
   </widget>
   <action name="actionNew">
    <property name="text">

@@ -41,7 +41,46 @@ class MainWindow(QMainWindow):
         self.actionUndo.setEnabled(False)
         self.actionRedo.setEnabled(False)
 
+        # Populate Formatting Toolbar
+        self._init_formatting_toolbar()
+
         self.statusbar.showMessage("Ready")
+
+    def _init_formatting_toolbar(self):
+        """Initialize the UI elements in the formatting toolbar."""
+        # Populate Font Families (Standard PDF Base 14 fonts for now)
+        base_fonts = ["Helvetica", "Times-Roman", "Courier", "Symbol", "ZapfDingbats"]
+        self.fontFamilyComboBox.addItems(base_fonts)
+
+        # Connect signals for future formatting logic
+        self.fontFamilyComboBox.currentTextChanged.connect(self._on_format_changed)
+        self.fontSizeSpinBox.valueChanged.connect(self._on_format_changed)
+        self.boldButton.toggled.connect(self._on_format_changed)
+        self.italicButton.toggled.connect(self._on_format_changed)
+        self.underlineButton.toggled.connect(self._on_format_changed)
+        self.colorButton.clicked.connect(self._on_color_clicked)
+        self.opacitySpinBox.valueChanged.connect(self._on_format_changed)
+        self.formatPainterButton.toggled.connect(self._on_format_painter_toggled)
+
+    def _on_format_changed(self, *args):
+        # Stub for when a formatting property is updated
+        # This will later be hooked up to the currently selected QGraphicsItem via QUndoCommand
+        pass
+
+    def _on_color_clicked(self):
+        from PyQt6.QtWidgets import QColorDialog
+        color = QColorDialog.getColor()
+        if color.isValid():
+            # Update the button visual or store the color state
+            # Stub for now
+            self._on_format_changed()
+
+    def _on_format_painter_toggled(self, checked):
+        if checked:
+            self.statusbar.showMessage("Format Painter: Active. Click an item to copy its format.")
+        else:
+            self.statusbar.showMessage("Format Painter: Inactive.")
+
 
     def new_pdf(self):
         """Initializes a new, empty in-memory PDF Document."""
