@@ -7,7 +7,7 @@ from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 import csv
 from fpdf import FPDF
 
-from PyQt6.QtWidgets import (
+from PyQt6.QtWidgets import (QSizeGrip,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QTextEdit,
     QMessageBox, QGraphicsView, QGraphicsScene,
@@ -162,6 +162,51 @@ class ResizableImageItem(QGraphicsPixmapItem):
             self.img_dict["deleted"] = True
             self.scene().removeItem(self)
 
+class TableContainer(QWidget):
+    def __init__(self, rows, cols, parent=None):
+        super().__init__(parent)
+        self.rows = rows
+        self.cols = cols
+
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+
+        # Drag Handle
+        self.handle = QLabel("    [:: Drag Table ::]")
+        self.handle.setStyleSheet("background-color: lightgray; border: 1px solid black; font-size: 10px; padding: 2px;")
+        self.handle.setFixedHeight(20)
+        self.layout.addWidget(self.handle)
+
+        # Table
+        self.table = QTableWidget(rows, cols)
+        self.table.horizontalHeader().setVisible(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setStyleSheet("QTableWidget { background-color: transparent; } QTableWidget::item { border: 1px solid black; }")
+        self.layout.addWidget(self.table)
+
+        # Size Grip for resizing
+        self.grip = QSizeGrip(self)
+        self.grip.setFixedSize(15, 15)
+        self.layout.addWidget(self.grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Distribute available height and width evenly among rows and columns
+        available_width = self.width()
+        available_height = self.height() - self.handle.height() - self.grip.height()
+
+        if self.table.columnCount() > 0:
+            col_w = int(available_width / self.table.columnCount())
+            for c in range(self.table.columnCount()):
+                self.table.setColumnWidth(c, col_w)
+
+        if self.table.rowCount() > 0:
+            row_h = int(available_height / self.table.rowCount())
+            for r in range(self.table.rowCount()):
+                self.table.setRowHeight(r, row_h)
 
 class DraggableTableProxy(QGraphicsProxyWidget):
     def __init__(self, table_dict, parent=None):
@@ -171,6 +216,16 @@ class DraggableTableProxy(QGraphicsProxyWidget):
         self.setFlag(QGraphicsProxyWidget.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsProxyWidget.GraphicsItemFlag.ItemSendsGeometryChanges, True)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        scene = self.scene()
+        if scene and self.widget():
+            views = scene.views()
+            if views:
+                zoom = views[0].parent_window.zoom
+                self.table_dict["w"] = self.widget().width() / zoom
+                self.table_dict["h"] = self.widget().height() / zoom
+
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
         scene = self.scene()
@@ -179,6 +234,8 @@ class DraggableTableProxy(QGraphicsProxyWidget):
             zoom = view.parent_window.zoom
             self.table_dict["x0"] = self.x() / zoom
             self.table_dict["y0"] = self.y() / zoom
+            self.table_dict["w"] = self.widget().width() / zoom
+            self.table_dict["h"] = self.widget().height() / zoom
 
     def contextMenuEvent(self, event):
         menu = QMenu()
@@ -190,24 +247,28 @@ class DraggableTableProxy(QGraphicsProxyWidget):
         del_t = menu.addAction("Delete Table")
 
         action = menu.exec(event.screenPos())
-        table_widget = self.widget()
+        container = self.widget()
+        table_widget = container.table
 
         if action == add_r:
             table_widget.insertRow(table_widget.rowCount())
             self.table_dict["rows"] += 1
+            container.resizeEvent(None) # Trigger distribution
         elif action == del_r:
             table_widget.removeRow(table_widget.currentRow() if table_widget.currentRow() >= 0 else table_widget.rowCount() - 1)
             self.table_dict["rows"] = max(1, self.table_dict["rows"] - 1)
+            container.resizeEvent(None)
         elif action == add_c:
             table_widget.insertColumn(table_widget.columnCount())
             self.table_dict["cols"] += 1
+            container.resizeEvent(None)
         elif action == del_c:
             table_widget.removeColumn(table_widget.currentColumn() if table_widget.currentColumn() >= 0 else table_widget.columnCount() - 1)
             self.table_dict["cols"] = max(1, self.table_dict["cols"] - 1)
+            container.resizeEvent(None)
         elif action == del_t:
             self.table_dict["deleted"] = True
             self.scene().removeItem(self)
-
 
 class PDFGraphicsView(QGraphicsView):
     def __init__(self, scene, parent=None):
@@ -280,7 +341,6 @@ class PDFEditorWindow(QMainWindow):
         self.btn_next = QPushButton("Next Page")
         self.btn_next.clicked.connect(self.next_page)
         self.lbl_page = QLabel("Page: 0 / 0")
-
 
         # New PDF, Convert, Print
         self.btn_new_pdf = QPushButton("New PDF")
@@ -420,8 +480,6 @@ class PDFEditorWindow(QMainWindow):
         font.setPointSizeF(self.spin_size.value() * self.zoom * 0.75)
         self.floating_editor.setFont(font)
 
-
-
     def print_pdf(self):
         if not self.doc: return
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
@@ -447,7 +505,6 @@ class PDFEditorWindow(QMainWindow):
             painter.end()
             QMessageBox.information(self, "Print", "Print job sent.")
 
-
     def create_new_pdf(self):
         filepath, _ = QFileDialog.getSaveFileName(self, "Create New PDF", "", "PDF Files (*.pdf)")
         if filepath:
@@ -460,13 +517,25 @@ class PDFEditorWindow(QMainWindow):
             self.current_page_num = 0
             self.render_page()
 
+    def open_pdf(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
+        if filepath:
+            self.original_filepath = filepath
+            self.doc = fitz.open(filepath)
+            self.current_page_num = 0
+            self.render_page()
+
     def convert_txt_to_pdf(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Select Text File", "", "Text Files (*.txt)")
         if not filepath: return
-        with open(filepath, 'r') as f: text_content = f.read()
+        with open(filepath, 'r', encoding='utf-8') as f: text_content = f.read()
+
+        # Replace non-latin1 characters with '?' to prevent FPDF crash
+        text_content = text_content.encode('latin-1', 'replace').decode('latin-1')
+
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", size=12)
+        pdf.set_font("helvetica", size=12)
         pdf.multi_cell(0, 10, text_content)
         out_path = filepath + ".pdf"
         pdf.output(out_path)
@@ -491,23 +560,16 @@ class PDFEditorWindow(QMainWindow):
         if not filepath: return
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", size=10)
+        pdf.set_font("helvetica", size=10)
         with open(filepath, newline='', encoding='utf-8') as csvfile:
             reader = csv.reader(csvfile)
             for row in reader:
                 line = " | ".join(row)
+                line = line.encode('latin-1', 'replace').decode('latin-1')
                 pdf.cell(0, 10, txt=line, ln=True)
         out_path = filepath + ".pdf"
         pdf.output(out_path)
         QMessageBox.information(self, "Success", f"Converted to {out_path}")
-
-    def open_pdf(self):
-        filepath, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
-        if filepath:
-            self.original_filepath = filepath
-            self.doc = fitz.open(filepath)
-            self.current_page_num = 0
-            self.render_page()
 
     def save_pdf(self):
         if not self.doc: return
@@ -519,23 +581,32 @@ class PDFEditorWindow(QMainWindow):
                     for t_dict in self.interactive_tables:
                         if not t_dict.get("deleted", False):
                             target_page = self.doc[t_dict.get("page_num", 0)]
-                            # If not currently on screen, we just rely on dictionary state. If on screen, grab from UI if needed.
-                            # The dictionary state is now fully synced via signals, so we can just use the dictionary.
                             x0 = t_dict["x0"]
-                            y0 = t_dict["y0"]
+
+                            # The overall widget Y includes the handle (20px unscaled)
+                            # We want the table drawing to start below the handle
+                            y0 = t_dict["y0"] + (20 / self.zoom)
                             curr_y = y0
                             cell_data = t_dict.get("cells", {})
+
+                            # Recalculate row/col sizes based on final total w/h minus handle and grip
+                            available_w = t_dict.get("w", t_dict["cols"] * 100)
+                            available_h = t_dict.get("h", t_dict["rows"] * 30 + 35) - (20 / self.zoom) - (15 / self.zoom)
+
+                            col_w = available_w / t_dict["cols"]
+                            row_h = available_h / t_dict["rows"]
+
                             for r in range(t_dict["rows"]):
                                 curr_x = x0
-                                row_h = 30 # Fixed default in this MVP
                                 for c in range(t_dict["cols"]):
-                                    col_w = 100
                                     rect = fitz.Rect(curr_x, curr_y, curr_x + col_w, curr_y + row_h)
                                     target_page.draw_rect(rect, color=(0,0,0), width=1)
 
                                     val = cell_data.get((r, c), "")
                                     if val:
                                         text_rect = fitz.Rect(curr_x + 2, curr_y + 2, curr_x + col_w, curr_y + row_h)
+                                        # Force latin-1 fallback to avoid FPDF-style unicode crashes during generic text insertion
+                                        val = val.encode('latin-1', 'replace').decode('latin-1')
                                         target_page.insert_textbox(text_rect, val, fontsize=11, fontname="helv")
 
                                     curr_x += col_w
@@ -593,9 +664,12 @@ class PDFEditorWindow(QMainWindow):
             "cols": cols,
             "x0": 50,
             "y0": 50,
+            "w": cols * 100,
+            "h": rows * 30 + 35, # Account for handle and grip
             "deleted": False,
             "page_num": self.current_page_num
         }
+        if not hasattr(self, 'interactive_tables'): self.interactive_tables = []
         self.interactive_tables.append(table_dict)
         self.render_page()
 
@@ -727,12 +801,14 @@ class PDFEditorWindow(QMainWindow):
         for t_dict in self.interactive_tables:
             if t_dict.get("deleted", False) or t_dict.get("page_num", 0) != self.current_page_num: continue
 
-            table = QTableWidget(t_dict["rows"], t_dict["cols"])
-            table.horizontalHeader().setVisible(False)
-            table.verticalHeader().setVisible(False)
-            table.setStyleSheet("QTableWidget { background-color: transparent; } QTableWidget::item { border: 1px solid black; }")
-            for c in range(t_dict["cols"]): table.setColumnWidth(c, int(100 * self.zoom))
-            for r in range(t_dict["rows"]): table.setRowHeight(r, int(30 * self.zoom))
+            container = TableContainer(t_dict["rows"], t_dict["cols"])
+
+            # Restore size or default
+            w = t_dict.get("w", t_dict["cols"] * 100) * self.zoom
+            h = t_dict.get("h", t_dict["rows"] * 30 + 35) * self.zoom
+            container.setFixedSize(int(w), int(h))
+
+            table = container.table
 
             # Restore data
             cell_data = t_dict.get("cells", {})
@@ -744,7 +820,7 @@ class PDFEditorWindow(QMainWindow):
             table.itemChanged.connect(lambda item, d=t_dict, t=table: self.update_table_data(d, t))
 
             proxy = DraggableTableProxy(t_dict)
-            proxy.setWidget(table)
+            proxy.setWidget(container)
             proxy.setPos(t_dict["x0"] * self.zoom, t_dict["y0"] * self.zoom)
             self.scene.addItem(proxy)
 
