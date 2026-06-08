@@ -78,6 +78,7 @@ class MainWindow(QMainWindow):
         menu_text = QMenu(self)
         action_find = menu_text.addAction("Find & Replace")
         self.btn_text.setMenu(menu_text)
+        self.btn_text.toggled.connect(self._on_add_text_toggled)
         self.toolBar.addWidget(self.btn_text)
 
         # 2. Links Tool
@@ -217,6 +218,7 @@ class MainWindow(QMainWindow):
         self.btn_undo_dialog.clicked.connect(self._show_undo_dialog)
         self.toolBar.addWidget(self.btn_undo_dialog)
         self.btn_text.toggled.connect(self._on_add_text_toggled)
+        self.btn_whiteout.toggled.connect(self._on_whiteout_toggled)
 
     def _show_undo_dialog(self):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QListWidget, QPushButton, QLabel
@@ -234,7 +236,14 @@ class MainWindow(QMainWindow):
                 lst.addItem(f"Action {i+1}: {cmd.actionText()}")
             l.addWidget(lst)
             btn = QPushButton("Revert selected")
-            # Logic to roll back stack to selected index will go here
+            def _revert():
+                selected = lst.currentRow()
+                if selected >= 0:
+                    # QUndoStack index works backwards when undoing
+                    self.cmd_manager.undo_stack.setIndex(selected)
+                    d.accept()
+
+            btn.clicked.connect(_revert)
             l.addWidget(btn)
 
         d.exec()
@@ -243,6 +252,9 @@ class MainWindow(QMainWindow):
         if checked:
             self.view.set_tool("add_text")
             self.statusbar.showMessage("Add Text Mode: Click anywhere on the canvas to add text.")
+            # Uncheck conflicting modes
+            if getattr(self, 'btn_whiteout', None):
+                self.btn_whiteout.setChecked(False)
         else:
             self.view.set_tool("select")
             self.statusbar.showMessage("Select Mode.")
@@ -331,18 +343,39 @@ class MainWindow(QMainWindow):
         try:
             page = self.doc[0]
 
-            # Map QGraphicsItems to PyMuPDF
+            # Map QGraphicsItems to PyMuPDF in a Two-Pass System
+            from PyQt6.QtWidgets import QGraphicsTextItem, QGraphicsPixmapItem, QGraphicsRectItem
+            zoom_factor = 2.0
+
+            # Pass 1: Destructive Redactions (Masks & Whiteouts)
+            has_redactions = False
+            for item in self.scene.items():
+                if item.zValue() >= 0 and isinstance(item, QGraphicsRectItem):
+                    scene_rect = item.sceneBoundingRect()
+                    f_rect = fitz.Rect(
+                        scene_rect.x() / zoom_factor,
+                        scene_rect.y() / zoom_factor,
+                        (scene_rect.x() + scene_rect.width()) / zoom_factor,
+                        (scene_rect.y() + scene_rect.height()) / zoom_factor
+                    )
+                    brush_color = item.brush().color()
+                    if brush_color.isValid() and brush_color.alpha() > 0:
+                        pdf_fill = (brush_color.red()/255.0, brush_color.green()/255.0, brush_color.blue()/255.0)
+                        page.add_redact_annot(f_rect, fill=pdf_fill)
+                        has_redactions = True
+
+            if has_redactions:
+                page.apply_redactions()
+
+            # Pass 2: Additive Layering (Text, Signatures, Drawn shapes)
             for item in self.scene.items():
                 if item.zValue() >= 0:
-                    from PyQt6.QtWidgets import QGraphicsTextItem, QGraphicsPixmapItem, QGraphicsRectItem
-                    zoom_factor = 2.0
                     x = item.x() / zoom_factor
                     y = item.y() / zoom_factor
 
                     if isinstance(item, QGraphicsTextItem):
                         text = item.toPlainText()
 
-                        # Use internal QTextCursor format if available, fallback to item font
                         cursor = item.textCursor()
                         fmt = cursor.charFormat()
                         qfont = fmt.font() if fmt.font().family() else item.font()
@@ -350,7 +383,8 @@ class MainWindow(QMainWindow):
 
                         fontsize = qfont.pointSizeF()
                         if fontsize <= 0: fontsize = qfont.pointSize()
-                        if fontsize <= 0: fontsize = 12 # Fallback
+                        if fontsize <= 0: fontsize = 12 * zoom_factor
+                        fontsize = fontsize / zoom_factor
 
                         pdf_color = (qcolor.red() / 255.0, qcolor.green() / 255.0, qcolor.blue() / 255.0)
 
@@ -366,22 +400,6 @@ class MainWindow(QMainWindow):
 
                         baseline_y = y + (fontsize * 0.8)
                         page.insert_text(fitz.Point(x, baseline_y), text, fontname=fontname, fontsize=fontsize, color=pdf_color)
-
-                    elif isinstance(item, QGraphicsRectItem):
-                        # Masking block
-                        # The QGraphicsRectItem geometry includes its internal rect() offset PLUS its scene pos().
-                        # We map the QRectF directly to scene coordinates, then scale down to PyMuPDF.
-                        scene_rect = item.sceneBoundingRect()
-                        f_rect = fitz.Rect(
-                            scene_rect.x() / zoom_factor,
-                            scene_rect.y() / zoom_factor,
-                            (scene_rect.x() + scene_rect.width()) / zoom_factor,
-                            (scene_rect.y() + scene_rect.height()) / zoom_factor
-                        )
-                        brush_color = item.brush().color()
-                        if brush_color.isValid() and brush_color.alpha() > 0:
-                            pdf_fill = (brush_color.red()/255.0, brush_color.green()/255.0, brush_color.blue()/255.0)
-                            page.draw_rect(f_rect, color=pdf_fill, fill=pdf_fill)
 
             # Save strategy: to avoid incremental lock errors on existing files,
             # we save to a temporary file, close the original, and swap.
@@ -507,9 +525,11 @@ class MainWindow(QMainWindow):
         text_item.setDefaultTextColor(qcolor)
 
         # Positioning: PyMuPDF bounding box top-left mapped to Qt top-left
-        # QGraphicsTextItem has some internal padding, we adjust slightly.
-        padding_offset = 4
-        text_item.setPos((bbox.x0 * zoom_factor) - padding_offset, (bbox.y0 * zoom_factor) - padding_offset)
+        # QGraphicsTextItem has a document margin of 4px by default. We must counteract this.
+        text_item.document().setDocumentMargin(0)
+
+        # PyMuPDF bbox includes font descent. We align closely to top-left.
+        text_item.setPos((bbox.x0 * zoom_factor), (bbox.y0 * zoom_factor))
         text_item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
         text_item.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable)
         text_item.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable)
@@ -705,3 +725,12 @@ class MainWindow(QMainWindow):
         from src.commands.command_manager import AddGraphicsItemCommand
         cmd = AddGraphicsItemCommand(self.scene, proxy, "Insert Table")
         self.cmd_manager.push(cmd)
+
+    def _on_whiteout_toggled(self, checked):
+        if checked:
+            self.view.set_tool("whiteout")
+            self.statusbar.showMessage("Whiteout Mode: Click and drag to create redaction blocks.")
+            if getattr(self, 'btn_text', None): self.btn_text.setChecked(False)
+        else:
+            self.view.set_tool("select")
+            self.statusbar.showMessage("Select Mode.")

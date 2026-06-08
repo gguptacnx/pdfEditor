@@ -5,7 +5,8 @@ from PyQt6.QtGui import QPainter, QColor, QFont
 class PDFGraphicsScene(QGraphicsScene):
     """Custom QGraphicsScene to handle PDF rendering and interaction."""
     # Signal emitted when a new text item has finished being edited for the first time
-    text_item_added = pyqtSignal(QGraphicsTextItem)
+    # Signal emitted when an item (text or rect) has finished being edited for the first time
+    text_item_added = pyqtSignal(object) # Changed from QGraphicsTextItem to object to allow QGraphicsRectItem
     # Signal emitted when double clicking on the canvas
     canvas_double_clicked = pyqtSignal(object) # passes QPointF scene_pos
 
@@ -32,12 +33,17 @@ class PDFGraphicsView(QGraphicsView):
         self.zoom_step = 0.1
 
         # Tools state
-        self.current_tool = "select" # can be 'select' or 'add_text'
+        self.current_tool = "select" # can be 'select', 'add_text', or 'whiteout'
+        self._is_drawing_rect = False
+        self._current_rect_item = None
+        self._rect_start_pos = None
 
     def set_tool(self, tool_name: str):
         self.current_tool = tool_name
         if tool_name == "add_text":
             self.setCursor(Qt.CursorShape.IBeamCursor)
+        elif tool_name == "whiteout":
+            self.setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.setCursor(Qt.CursorShape.ArrowCursor)
 
@@ -48,8 +54,43 @@ class PDFGraphicsView(QGraphicsView):
                 self.scene().canvas_double_clicked.emit(scene_pos)
         super().mouseDoubleClickEvent(event)
 
+    def mouseMoveEvent(self, event):
+        if self.current_tool == "whiteout" and self._is_drawing_rect and self._current_rect_item:
+            scene_pos = self.mapToScene(event.pos())
+            from PyQt6.QtCore import QRectF
+            rect = QRectF(self._rect_start_pos, scene_pos).normalized()
+            self._current_rect_item.setRect(rect)
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.current_tool == "whiteout" and self._is_drawing_rect and self._current_rect_item:
+            self._is_drawing_rect = False
+            # Emit signal to register to undo stack
+            if isinstance(self.scene(), PDFGraphicsScene):
+                self.scene().text_item_added.emit(self._current_rect_item) # Reuse signal for simplicity
+            self._current_rect_item = None
+        else:
+            super().mouseReleaseEvent(event)
+
     def mousePressEvent(self, event):
-        if self.current_tool == "add_text" and event.button() == Qt.MouseButton.LeftButton:
+        if self.current_tool == "whiteout" and event.button() == Qt.MouseButton.LeftButton:
+            self._is_drawing_rect = True
+            self._rect_start_pos = self.mapToScene(event.pos())
+            from PyQt6.QtWidgets import QGraphicsRectItem
+            from PyQt6.QtGui import QColor, QPen
+            from PyQt6.QtCore import QRectF
+
+            self._current_rect_item = QGraphicsRectItem(QRectF(self._rect_start_pos, self._rect_start_pos))
+            self._current_rect_item.setBrush(QColor(255, 255, 255)) # Solid white
+            pen = QPen(QColor(150, 150, 150))
+            pen.setStyle(Qt.PenStyle.DashLine)
+            self._current_rect_item.setPen(pen)
+            self._current_rect_item.setZValue(100) # Draw over text
+
+            self.scene().addItem(self._current_rect_item)
+
+        elif self.current_tool == "add_text" and event.button() == Qt.MouseButton.LeftButton:
             scene_pos = self.mapToScene(event.pos())
 
             # Create a new text item
