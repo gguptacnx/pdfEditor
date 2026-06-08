@@ -37,6 +37,9 @@ class MainWindow(QMainWindow):
         self.cmd_manager.undo_stack.canUndoChanged.connect(self.actionUndo.setEnabled)
         self.cmd_manager.undo_stack.canRedoChanged.connect(self.actionRedo.setEnabled)
 
+        # Connect Canvas Signals
+        self.scene.text_item_added.connect(self._on_text_item_added)
+
         # Initial states
         self.actionUndo.setEnabled(False)
         self.actionRedo.setEnabled(False)
@@ -47,12 +50,68 @@ class MainWindow(QMainWindow):
         self.statusbar.showMessage("Ready")
 
     def _init_formatting_toolbar(self):
-        """Initialize the UI elements in the formatting toolbar."""
-        # Populate Font Families (Standard PDF Base 14 fonts for now)
+        """Initialize the UI elements in the formatting toolbar programmatically."""
+        from PyQt6.QtWidgets import QComboBox, QSpinBox, QPushButton
+
+        # 1. Add Text Tool
+        self.addTextButton = QPushButton("Add Text")
+        self.addTextButton.setCheckable(True)
+        self.addTextButton.setToolTip("Click to add text to the PDF")
+        self.addTextButton.toggled.connect(self._on_add_text_toggled)
+        self.toolBar.addWidget(self.addTextButton)
+
+        self.toolBar.addSeparator()
+
+        # 2. Font Family
+        self.fontFamilyComboBox = QComboBox()
         base_fonts = ["Helvetica", "Times-Roman", "Courier", "Symbol", "ZapfDingbats"]
         self.fontFamilyComboBox.addItems(base_fonts)
+        self.fontFamilyComboBox.setToolTip("Font Family")
+        self.toolBar.addWidget(self.fontFamilyComboBox)
 
-        # Connect signals for future formatting logic
+        # 3. Font Size
+        self.fontSizeSpinBox = QSpinBox()
+        self.fontSizeSpinBox.setRange(6, 144)
+        self.fontSizeSpinBox.setValue(12)
+        self.fontSizeSpinBox.setToolTip("Font Size")
+        self.toolBar.addWidget(self.fontSizeSpinBox)
+
+        self.toolBar.addSeparator()
+
+        # 4. Bold, Italic, Underline
+        self.boldButton = QPushButton("B")
+        self.boldButton.setCheckable(True)
+        self.toolBar.addWidget(self.boldButton)
+
+        self.italicButton = QPushButton("I")
+        self.italicButton.setCheckable(True)
+        self.toolBar.addWidget(self.italicButton)
+
+        self.underlineButton = QPushButton("U")
+        self.underlineButton.setCheckable(True)
+        self.toolBar.addWidget(self.underlineButton)
+
+        self.toolBar.addSeparator()
+
+        # 5. Color & Opacity
+        self.colorButton = QPushButton("Color")
+        self.toolBar.addWidget(self.colorButton)
+
+        self.opacitySpinBox = QSpinBox()
+        self.opacitySpinBox.setRange(0, 100)
+        self.opacitySpinBox.setValue(100)
+        self.opacitySpinBox.setSuffix("%")
+        self.opacitySpinBox.setToolTip("Opacity")
+        self.toolBar.addWidget(self.opacitySpinBox)
+
+        self.toolBar.addSeparator()
+
+        # 6. Format Painter
+        self.formatPainterButton = QPushButton("Format Painter")
+        self.formatPainterButton.setCheckable(True)
+        self.toolBar.addWidget(self.formatPainterButton)
+
+        # Connect Signals
         self.fontFamilyComboBox.currentTextChanged.connect(self._on_format_changed)
         self.fontSizeSpinBox.valueChanged.connect(self._on_format_changed)
         self.boldButton.toggled.connect(self._on_format_changed)
@@ -61,6 +120,16 @@ class MainWindow(QMainWindow):
         self.colorButton.clicked.connect(self._on_color_clicked)
         self.opacitySpinBox.valueChanged.connect(self._on_format_changed)
         self.formatPainterButton.toggled.connect(self._on_format_painter_toggled)
+
+    def _on_add_text_toggled(self, checked):
+        if checked:
+            self.view.set_tool("add_text")
+            self.statusbar.showMessage("Add Text Mode: Click anywhere on the canvas to add text.")
+            # Uncheck if format painter is on
+            self.formatPainterButton.setChecked(False)
+        else:
+            self.view.set_tool("select")
+            self.statusbar.showMessage("Select Mode.")
 
     def _on_format_changed(self, *args):
         # Stub for when a formatting property is updated
@@ -142,8 +211,12 @@ class MainWindow(QMainWindow):
 
                     if isinstance(item, QGraphicsTextItem):
                         text = item.toPlainText()
+                        # PyMuPDF insert_text expects the bottom-left baseline coordinate, not the top-left bounding box.
+                        # We approximate the baseline descent offset (roughly 80% of font size).
+                        fontsize = 12
+                        baseline_y = y + (fontsize * 0.8)
                         # Default insertion, ignoring complex formatting for now
-                        page.insert_text(fitz.Point(x, y), text, fontname="helv", fontsize=12, color=(0,0,0))
+                        page.insert_text(fitz.Point(x, baseline_y), text, fontname="helv", fontsize=fontsize, color=(0,0,0))
 
                     elif isinstance(item, QGraphicsRectItem):
                         rect = item.rect()
@@ -176,3 +249,17 @@ class MainWindow(QMainWindow):
 
         # Set scene rect to match page
         self.scene.setSceneRect(0, 0, qpix.width(), qpix.height())
+
+    def _on_text_item_added(self, text_item):
+        from src.commands.command_manager import AddGraphicsItemCommand
+        # Push the creation to the undo stack
+        self.scene.removeItem(text_item)
+
+        cmd = AddGraphicsItemCommand(self.scene, text_item, "Add Text")
+        self.cmd_manager.push(cmd)
+
+        # Restore focus so the user can begin typing immediately
+        text_item.setFocus()
+
+        # Turn off the Add Text toggle button
+        self.addTextButton.setChecked(False)
