@@ -41,6 +41,9 @@ class CommandManager:
     def push(self, command: QUndoCommand):
         """Pushes a command onto the stack, executing its redo() method."""
         self.undo_stack.push(command)
+        # PyQt QUndoStack.push() sometimes doesn't execute redo() immediately in certain Qt versions
+        # unless triggered via macro or event loop. Let's force it if it didn't run.
+        # Actually, QUndoStack.push DOES run redo. Let's just print a debug.
 
     def undo(self):
         self.undo_stack.undo()
@@ -50,3 +53,23 @@ class CommandManager:
 
     def clear(self):
         self.undo_stack.clear()
+
+class ChangeFormatCommand(QUndoCommand):
+    """Command to change the formatting (font, color) of a QGraphicsTextItem."""
+    def __init__(self, item: QGraphicsItem, old_format: dict, new_format: dict, description: str = "Change Format"):
+        super().__init__(description)
+        self.item = item
+        self.old_format = old_format
+        self.new_format = new_format
+
+    def _apply_format(self, fmt: dict):
+        if 'font' in fmt:
+            self.item.setFont(fmt['font'])
+        if 'color' in fmt:
+            self.item.setDefaultTextColor(fmt['color'])
+
+    def redo(self):
+        self._apply_format(self.new_format)
+
+    def undo(self):
+        self._apply_format(self.old_format)

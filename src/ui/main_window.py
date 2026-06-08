@@ -30,6 +30,7 @@ class MainWindow(QMainWindow):
         self.actionNew.triggered.connect(self.new_pdf)
         self.actionOpen.triggered.connect(self.open_pdf)
         self.actionSave.triggered.connect(self.save_pdf)
+        self.actionSaveAs.triggered.connect(lambda: self.save_pdf(save_as=True))
         self.actionUndo.triggered.connect(self.cmd_manager.undo)
         self.actionRedo.triggered.connect(self.cmd_manager.redo)
 
@@ -39,6 +40,16 @@ class MainWindow(QMainWindow):
 
         # Connect Canvas Signals
         self.scene.text_item_added.connect(self._on_text_item_added)
+        self.scene.selectionChanged.connect(self._on_selection_changed)
+
+        # Track current state
+        self.original_filepath = None
+        self._is_formatting_programmatically = False
+        self.scene.selectionChanged.connect(self._on_selection_changed)
+
+        # Track current state
+        self.original_filepath = None
+        self._is_formatting_programmatically = False
 
         # Initial states
         self.actionUndo.setEnabled(False)
@@ -131,17 +142,81 @@ class MainWindow(QMainWindow):
             self.view.set_tool("select")
             self.statusbar.showMessage("Select Mode.")
 
+    def _on_selection_changed(self):
+        """Syncs the toolbar to the currently selected item."""
+        items = self.scene.selectedItems()
+        if not items:
+            return
+
+        item = items[0]
+        from PyQt6.QtWidgets import QGraphicsTextItem
+        if isinstance(item, QGraphicsTextItem):
+            self._is_formatting_programmatically = True
+            font = item.font()
+            color = item.defaultTextColor()
+
+            # Update UI safely without triggering signals
+            idx = self.fontFamilyComboBox.findText(font.family())
+            if idx >= 0: self.fontFamilyComboBox.setCurrentIndex(idx)
+
+            self.fontSizeSpinBox.setValue(font.pointSize())
+            self.boldButton.setChecked(font.bold())
+            self.italicButton.setChecked(font.italic())
+            self.underlineButton.setChecked(font.underline())
+            self.colorButton.setStyleSheet(f"background-color: {color.name()};")
+
+            self._is_formatting_programmatically = False
+
+    def _get_current_format_dict(self):
+        from PyQt6.QtGui import QFont, QColor
+        font = QFont(self.fontFamilyComboBox.currentText(), self.fontSizeSpinBox.value())
+        font.setBold(self.boldButton.isChecked())
+        font.setItalic(self.italicButton.isChecked())
+        font.setUnderline(self.underlineButton.isChecked())
+
+        # Extract color from stylesheet
+        color = QColor("black") # Default
+        style = self.colorButton.styleSheet()
+        if "background-color" in style:
+            hex_str = style.split("background-color:")[1].split(";")[0].strip()
+            color = QColor(hex_str)
+
+        return {"font": font, "color": color}
+
     def _on_format_changed(self, *args):
-        # Stub for when a formatting property is updated
-        # This will later be hooked up to the currently selected QGraphicsItem via QUndoCommand
-        pass
+        if getattr(self, '_is_formatting_programmatically', False):
+            return
+
+        items = self.scene.selectedItems()
+        if not items:
+            return
+
+        item = items[0]
+        from PyQt6.QtWidgets import QGraphicsTextItem
+        from src.commands.command_manager import ChangeFormatCommand
+
+        if isinstance(item, QGraphicsTextItem):
+            old_format = {"font": item.font(), "color": item.defaultTextColor()}
+            new_format = self._get_current_format_dict()
+
+            # Recreate QFont object explicitly. There is a PyQt6 bug where pulling from UI elements directly
+            # sometimes doesn't persist through the command stack due to garbage collection bindings.
+            from PyQt6.QtGui import QFont, QColor
+            clean_new_font = QFont(new_format['font'].family(), new_format['font'].pointSize())
+            clean_new_font.setBold(new_format['font'].bold())
+            clean_new_font.setItalic(new_format['font'].italic())
+            clean_new_font.setUnderline(new_format['font'].underline())
+
+            clean_new = {"font": clean_new_font, "color": QColor(new_format['color'])}
+
+            cmd = ChangeFormatCommand(item, old_format, clean_new, "Change Format")
+            self.cmd_manager.push(cmd)
 
     def _on_color_clicked(self):
         from PyQt6.QtWidgets import QColorDialog
         color = QColorDialog.getColor()
         if color.isValid():
-            # Update the button visual or store the color state
-            # Stub for now
+            self.colorButton.setStyleSheet(f"background-color: {color.name()};")
             self._on_format_changed()
 
     def _on_format_painter_toggled(self, checked):
@@ -180,6 +255,7 @@ class MainWindow(QMainWindow):
 
             if len(self.doc) > 0:
                 self._render_page(self.doc[0])
+            self.original_filepath = filepath
             self.statusbar.showMessage(f"Opened {os.path.basename(filepath)}")
 
     def save_pdf(self):
