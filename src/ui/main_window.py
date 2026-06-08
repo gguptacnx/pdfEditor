@@ -147,9 +147,13 @@ class MainWindow(QMainWindow):
         lbl_img = QLabel("[ PREVIEW BOX: DRAFT X ]")
         lbl_img.setStyleSheet("color: red; border: 1px solid red; padding: 10px; text-align: center;")
         l_images.addWidget(lbl_img)
-        l_images.addWidget(QPushButton("+ New Image"))
-        l_images.addWidget(QPushButton("Delete existing image"))
-        l_images.addWidget(QPushButton("+ New Stamp"))
+        self.btn_new_image = QPushButton("+ New Image")
+        self.btn_del_image = QPushButton("Delete existing image")
+        self.btn_new_stamp = QPushButton("+ New Stamp")
+
+        l_images.addWidget(self.btn_new_image)
+        l_images.addWidget(self.btn_del_image)
+        l_images.addWidget(self.btn_new_stamp)
         wa_images = QWidgetAction(self)
         wa_images.setDefaultWidget(w_images)
         menu_images.addAction(wa_images)
@@ -193,7 +197,8 @@ class MainWindow(QMainWindow):
         l_ann.addWidget(QPushButton("Underline [Colors]"))
         l_ann.addWidget(QLabel("FREEHAND"))
         l_ann.addWidget(QPushButton("Highlight [Colors]"))
-        l_ann.addWidget(QPushButton("Draw [Colors]"))
+        self.btn_draw_freehand = QPushButton("Draw [Colors]")
+        l_ann.addWidget(self.btn_draw_freehand)
         wa_ann = QWidgetAction(self)
         wa_ann.setDefaultWidget(w_ann)
         menu_annotate.addAction(wa_ann)
@@ -205,10 +210,12 @@ class MainWindow(QMainWindow):
         self.btn_shapes.setText("Shapes")
         self.btn_shapes.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu_shapes = QMenu(self)
-        menu_shapes.addAction("Ellipse")
-        menu_shapes.addAction("Rectangle")
-        menu_shapes.addAction("Line")
-        menu_shapes.addAction("Arrow")
+        self.action_shape_ellipse = menu_shapes.addAction("Ellipse")
+        self.action_shape_rect = menu_shapes.addAction("Rectangle")
+        self.action_shape_line = menu_shapes.addAction("Line")
+
+        # We drop Arrow for now as it requires complex QPainterPath mapping, standard lines provided
+
         self.btn_shapes.setMenu(menu_shapes)
         self.toolBar.addWidget(self.btn_shapes)
 
@@ -219,6 +226,11 @@ class MainWindow(QMainWindow):
         self.toolBar.addWidget(self.btn_undo_dialog)
         self.btn_text.toggled.connect(self._on_add_text_toggled)
         self.btn_whiteout.toggled.connect(self._on_whiteout_toggled)
+        self.btn_new_image.clicked.connect(self._on_add_image_clicked)
+        self.action_shape_ellipse.triggered.connect(lambda: self._on_shape_toggled("shape_ellipse"))
+        self.action_shape_rect.triggered.connect(lambda: self._on_shape_toggled("shape_rect"))
+        self.action_shape_line.triggered.connect(lambda: self._on_shape_toggled("shape_line"))
+        self.btn_draw_freehand.clicked.connect(self._on_freehand_toggled)
 
     def _show_undo_dialog(self):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QListWidget, QPushButton, QLabel
@@ -344,7 +356,7 @@ class MainWindow(QMainWindow):
             page = self.doc[0]
 
             # Map QGraphicsItems to PyMuPDF in a Two-Pass System
-            from PyQt6.QtWidgets import QGraphicsTextItem, QGraphicsPixmapItem, QGraphicsRectItem
+            from PyQt6.QtWidgets import QGraphicsTextItem, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsPathItem
             zoom_factor = 2.0
 
             # Pass 1: Destructive Redactions (Masks & Whiteouts)
@@ -400,6 +412,70 @@ class MainWindow(QMainWindow):
 
                         baseline_y = y + (fontsize * 0.8)
                         page.insert_text(fitz.Point(x, baseline_y), text, fontname=fontname, fontsize=fontsize, color=pdf_color)
+
+                    elif isinstance(item, QGraphicsEllipseItem):
+                        scene_rect = item.sceneBoundingRect()
+                        f_rect = fitz.Rect(
+                            scene_rect.x() / zoom_factor,
+                            scene_rect.y() / zoom_factor,
+                            (scene_rect.x() + scene_rect.width()) / zoom_factor,
+                            (scene_rect.y() + scene_rect.height()) / zoom_factor
+                        )
+                        page.draw_oval(f_rect, color=(0,0,0), width=1)
+
+                    elif isinstance(item, QGraphicsLineItem):
+                        from PyQt6.QtCore import QLineF
+                        line = item.line()
+                        p1 = item.mapToScene(line.p1())
+                        p2 = item.mapToScene(line.p2())
+                        page.draw_line(
+                            fitz.Point(p1.x() / zoom_factor, p1.y() / zoom_factor),
+                            fitz.Point(p2.x() / zoom_factor, p2.y() / zoom_factor),
+                            color=(0,0,0), width=1
+                        )
+
+                    elif isinstance(item, QGraphicsPathItem):
+                        path = item.path()
+                        if not path.isEmpty():
+                            points = []
+                            length = path.length()
+                            step = max(2.0, length / 50.0)
+                            curr = 0.0
+                            while curr <= length:
+                                p = item.mapToScene(path.pointAtPercent(path.percentAtLength(curr)))
+                                points.append(fitz.Point(p.x() / zoom_factor, p.y() / zoom_factor))
+                                curr += step
+
+                            p = item.mapToScene(path.pointAtPercent(1.0))
+                            points.append(fitz.Point(p.x() / zoom_factor, p.y() / zoom_factor))
+
+                            if len(points) > 1:
+                                for i in range(len(points)-1):
+                                    page.draw_line(points[i], points[i+1], color=(0,0,0), width=1)
+
+                    elif isinstance(item, QGraphicsPixmapItem):
+                        scene_rect = item.sceneBoundingRect()
+                        f_rect = fitz.Rect(
+                            scene_rect.x() / zoom_factor,
+                            scene_rect.y() / zoom_factor,
+                            (scene_rect.x() + scene_rect.width()) / zoom_factor,
+                            (scene_rect.y() + scene_rect.height()) / zoom_factor
+                        )
+                        if hasattr(item, '_source_filepath'):
+                            page.insert_image(f_rect, filename=item._source_filepath)
+
+                    elif isinstance(item, QGraphicsRectItem):
+                        # Drawn wireframe rectangle (if brush is transparent, it wasn't processed in Pass 1)
+                        brush_color = item.brush().color()
+                        if not brush_color.isValid() or brush_color.alpha() == 0:
+                            scene_rect = item.sceneBoundingRect()
+                            f_rect = fitz.Rect(
+                                scene_rect.x() / zoom_factor,
+                                scene_rect.y() / zoom_factor,
+                                (scene_rect.x() + scene_rect.width()) / zoom_factor,
+                                (scene_rect.y() + scene_rect.height()) / zoom_factor
+                            )
+                            page.draw_rect(f_rect, color=(0,0,0), width=1)
 
             # Save strategy: to avoid incremental lock errors on existing files,
             # we save to a temporary file, close the original, and swap.
@@ -734,3 +810,45 @@ class MainWindow(QMainWindow):
         else:
             self.view.set_tool("select")
             self.statusbar.showMessage("Select Mode.")
+
+    def _on_add_image_clicked(self):
+        from PyQt6.QtWidgets import QFileDialog, QGraphicsPixmapItem
+        from PyQt6.QtGui import QPixmap
+        from PyQt6.QtCore import Qt
+        from src.commands.command_manager import AddGraphicsItemCommand
+
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.png *.jpg *.jpeg)")
+        if not filepath:
+            return
+
+        pixmap = QPixmap(filepath)
+        if pixmap.isNull():
+            return
+
+        # Scale if it's too huge
+        if pixmap.width() > 800 or pixmap.height() > 800:
+            pixmap = pixmap.scaled(800, 800, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+        item = QGraphicsPixmapItem(pixmap)
+        item.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable)
+        item.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable)
+        item.setPos(50, 50)
+        item.setZValue(5) # Draw above text
+
+        # We attach the raw filepath so the compiler can easily read the bytes
+        item._source_filepath = filepath
+
+        cmd = AddGraphicsItemCommand(self.scene, item, "Insert Image")
+        self.cmd_manager.push(cmd)
+
+        # Close the popup menu automatically
+        self.btn_images.menu().hide()
+
+    def _on_shape_toggled(self, shape_type):
+        self.view.set_tool(shape_type)
+        self.statusbar.showMessage(f"Shape Mode: Click and drag to draw a {shape_type.split('_')[1]}.")
+
+    def _on_freehand_toggled(self):
+        self.view.set_tool("freehand")
+        self.statusbar.showMessage("Freehand Mode: Click and drag to draw paths.")
+        self.btn_annotate.menu().hide()

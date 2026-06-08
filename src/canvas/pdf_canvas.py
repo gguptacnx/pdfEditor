@@ -38,11 +38,18 @@ class PDFGraphicsView(QGraphicsView):
         self._current_rect_item = None
         self._rect_start_pos = None
 
+        self._is_drawing_shape = False
+        self._current_shape_item = None
+
+        self._is_freehand = False
+        self._current_path_item = None
+        self._current_path = None
+
     def set_tool(self, tool_name: str):
         self.current_tool = tool_name
         if tool_name == "add_text":
             self.setCursor(Qt.CursorShape.IBeamCursor)
-        elif tool_name == "whiteout":
+        elif tool_name in ["whiteout", "shape_rect", "shape_ellipse", "shape_line", "freehand"]:
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -60,6 +67,34 @@ class PDFGraphicsView(QGraphicsView):
             from PyQt6.QtCore import QRectF
             rect = QRectF(self._rect_start_pos, scene_pos).normalized()
             self._current_rect_item.setRect(rect)
+        elif self.current_tool == "freehand" and self._is_freehand and self._current_path_item:
+            scene_pos = self.mapToScene(event.pos())
+            self._current_path.lineTo(scene_pos)
+            self._current_path_item.setPath(self._current_path)
+
+        elif self.current_tool == "freehand" and self._is_freehand and self._current_path_item:
+            self._is_freehand = False
+            from PyQt6.QtWidgets import QGraphicsItem
+            self._current_path_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
+            self._current_path_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+
+            if isinstance(self.scene(), PDFGraphicsScene):
+                self.scene().text_item_added.emit(self._current_path_item)
+
+            self._current_path_item = None
+            self._current_path = None
+
+        elif self.current_tool in ["shape_rect", "shape_ellipse", "shape_line"] and self._is_drawing_shape and self._current_shape_item:
+            scene_pos = self.mapToScene(event.pos())
+            if self.current_tool == "shape_line":
+                from PyQt6.QtCore import QLineF
+                self._current_shape_item.setLine(QLineF(self._rect_start_pos, scene_pos))
+            else:
+                from PyQt6.QtCore import QRectF
+                # We don't strictly normalize here so we can draw in any direction, QRectF handles it visually usually,
+                # but normalize() is safer for QGraphicsRectItem boundaries.
+                rect = QRectF(self._rect_start_pos, scene_pos).normalized()
+                self._current_shape_item.setRect(rect)
         else:
             super().mouseMoveEvent(event)
 
@@ -70,6 +105,33 @@ class PDFGraphicsView(QGraphicsView):
             if isinstance(self.scene(), PDFGraphicsScene):
                 self.scene().text_item_added.emit(self._current_rect_item) # Reuse signal for simplicity
             self._current_rect_item = None
+        elif self.current_tool == "freehand" and self._is_freehand and self._current_path_item:
+            scene_pos = self.mapToScene(event.pos())
+            self._current_path.lineTo(scene_pos)
+            self._current_path_item.setPath(self._current_path)
+
+        elif self.current_tool == "freehand" and getattr(self, '_is_freehand', False) and getattr(self, '_current_path_item', None):
+            self._is_freehand = False
+            from PyQt6.QtWidgets import QGraphicsItem
+            self._current_path_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
+            self._current_path_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+
+            if isinstance(self.scene(), PDFGraphicsScene):
+                self.scene().text_item_added.emit(self._current_path_item)
+
+            self._current_path_item = None
+            self._current_path = None
+
+        elif self.current_tool in ["shape_rect", "shape_ellipse", "shape_line"] and getattr(self, '_is_drawing_shape', False) and getattr(self, '_current_shape_item', None):
+            self._is_drawing_shape = False
+            from PyQt6.QtWidgets import QGraphicsItem
+            self._current_shape_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
+            self._current_shape_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+
+            if isinstance(self.scene(), PDFGraphicsScene):
+                self.scene().text_item_added.emit(self._current_shape_item)
+
+            self._current_shape_item = None
         else:
             super().mouseReleaseEvent(event)
 
@@ -89,6 +151,47 @@ class PDFGraphicsView(QGraphicsView):
             self._current_rect_item.setZValue(100) # Draw over text
 
             self.scene().addItem(self._current_rect_item)
+
+        elif self.current_tool == "freehand" and event.button() == Qt.MouseButton.LeftButton:
+            self._is_freehand = True
+            scene_pos = self.mapToScene(event.pos())
+            from PyQt6.QtWidgets import QGraphicsPathItem
+            from PyQt6.QtGui import QPainterPath, QPen, QColor
+
+            self._current_path = QPainterPath(scene_pos)
+            self._current_path_item = QGraphicsPathItem(self._current_path)
+
+            pen = QPen(QColor(0, 0, 0)) # Default black for now
+            pen.setWidth(2)
+            # Smooth joins
+            from PyQt6.QtCore import Qt
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+
+            self._current_path_item.setPen(pen)
+            self._current_path_item.setZValue(60)
+            self.scene().addItem(self._current_path_item)
+
+        elif self.current_tool in ["shape_rect", "shape_ellipse", "shape_line"] and event.button() == Qt.MouseButton.LeftButton:
+            self._is_drawing_shape = True
+            self._rect_start_pos = self.mapToScene(event.pos())
+            from PyQt6.QtWidgets import QGraphicsRectItem, QGraphicsEllipseItem, QGraphicsLineItem
+            from PyQt6.QtGui import QColor, QPen
+            from PyQt6.QtCore import QRectF, QLineF
+
+            pen = QPen(QColor(0, 0, 0)) # Default black
+            pen.setWidth(2)
+
+            if self.current_tool == "shape_rect":
+                self._current_shape_item = QGraphicsRectItem(QRectF(self._rect_start_pos, self._rect_start_pos))
+            elif self.current_tool == "shape_ellipse":
+                self._current_shape_item = QGraphicsEllipseItem(QRectF(self._rect_start_pos, self._rect_start_pos))
+            elif self.current_tool == "shape_line":
+                self._current_shape_item = QGraphicsLineItem(QLineF(self._rect_start_pos, self._rect_start_pos))
+
+            self._current_shape_item.setPen(pen)
+            self._current_shape_item.setZValue(50)
+            self.scene().addItem(self._current_shape_item)
 
         elif self.current_tool == "add_text" and event.button() == Qt.MouseButton.LeftButton:
             scene_pos = self.mapToScene(event.pos())
