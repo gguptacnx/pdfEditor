@@ -272,8 +272,34 @@ class MainWindow(QMainWindow):
             self.statusbar.showMessage("Select Mode.")
 
     def _on_selection_changed(self):
-        """Syncs the toolbar to the currently selected item. (Disabled until Formatting Toolbar is rebuilt)"""
-        pass
+        """Syncs the toolbar to the currently selected item."""
+        items = self.scene.selectedItems()
+        if not items:
+            return
+
+        item = items[0]
+        from PyQt6.QtWidgets import QGraphicsTextItem
+        if isinstance(item, QGraphicsTextItem):
+            self._is_formatting_programmatically = True
+
+            cursor = item.textCursor()
+            fmt = cursor.charFormat()
+            font = fmt.font() if fmt.font().family() else item.font()
+            color = fmt.foreground().color() if fmt.foreground().color().isValid() else item.defaultTextColor()
+
+            # Since the formatting toolbar was ripped out and re-injected dynamically,
+            # we must ensure these UI elements actually exist in the current layout context.
+            if hasattr(self, 'fontFamilyComboBox'):
+                idx = self.fontFamilyComboBox.findText(font.family())
+                if idx >= 0: self.fontFamilyComboBox.setCurrentIndex(idx)
+
+            if hasattr(self, 'fontSizeSpinBox'): self.fontSizeSpinBox.setValue(font.pointSize())
+            if hasattr(self, 'boldButton'): self.boldButton.setChecked(font.bold())
+            if hasattr(self, 'italicButton'): self.italicButton.setChecked(font.italic())
+            if hasattr(self, 'underlineButton'): self.underlineButton.setChecked(font.underline())
+            if hasattr(self, 'colorButton'): self.colorButton.setStyleSheet(f"background-color: {color.name()};")
+
+            self._is_formatting_programmatically = False
 
     def _get_current_format_dict(self):
         from PyQt6.QtGui import QFont, QColor
@@ -291,8 +317,61 @@ class MainWindow(QMainWindow):
 
         return {"font": font, "color": color}
 
+    def _get_current_format_dict(self):
+        from PyQt6.QtGui import QFont, QColor
+        font = QFont()
+        if hasattr(self, 'fontFamilyComboBox'): font.setFamily(self.fontFamilyComboBox.currentText())
+        if hasattr(self, 'fontSizeSpinBox'): font.setPointSize(self.fontSizeSpinBox.value())
+        if hasattr(self, 'boldButton'): font.setBold(self.boldButton.isChecked())
+        if hasattr(self, 'italicButton'): font.setItalic(self.italicButton.isChecked())
+        if hasattr(self, 'underlineButton'): font.setUnderline(self.underlineButton.isChecked())
+
+        color = QColor("black")
+        if hasattr(self, 'colorButton'):
+            style = self.colorButton.styleSheet()
+            if "background-color" in style:
+                hex_str = style.split("background-color:")[1].split(";")[0].strip()
+                color = QColor(hex_str)
+        return {"font": font, "color": color}
+
     def _on_format_changed(self, *args):
-        pass
+        if getattr(self, '_is_formatting_programmatically', False):
+            return
+
+        items = self.scene.selectedItems()
+        if not items:
+            return
+
+        item = items[0]
+        from PyQt6.QtWidgets import QGraphicsTextItem
+        from src.commands.command_manager import ChangeFormatCommand
+        from PyQt6.QtGui import QFont, QColor
+
+        if isinstance(item, QGraphicsTextItem):
+            old_format = {"font": item.font(), "color": item.defaultTextColor()}
+            new_format = self._get_current_format_dict()
+
+            clean_new_font = QFont(new_format['font'].family(), new_format['font'].pointSize())
+            clean_new_font.setBold(new_format['font'].bold())
+            clean_new_font.setItalic(new_format['font'].italic())
+            clean_new_font.setUnderline(new_format['font'].underline())
+            clean_new = {"font": clean_new_font, "color": QColor(new_format['color'])}
+
+            # Since the user explicitly changed formatting, we strip the original font tag
+            # so the compiler maps the newly chosen font natively.
+            if hasattr(item, '_original_pdf_font'):
+                delattr(item, '_original_pdf_font')
+
+            cmd = ChangeFormatCommand(item, old_format, clean_new, "Change Format")
+            self.cmd_manager.push(cmd)
+
+    def _on_color_clicked(self):
+        from PyQt6.QtWidgets import QColorDialog
+        color = QColorDialog.getColor()
+        if color.isValid():
+            if hasattr(self, 'colorButton'):
+                self.colorButton.setStyleSheet(f"background-color: {color.name()};")
+            self._on_format_changed()
 
     def _on_color_clicked(self):
         from PyQt6.QtWidgets import QColorDialog
@@ -402,6 +481,11 @@ class MainWindow(QMainWindow):
 
                         family = "helv"
                         fname = qfont.family().lower()
+
+                        # Use the original pdf font tag if available to guide the Base-14 mapping
+                        if hasattr(item, '_original_pdf_font'):
+                            fname = item._original_pdf_font.lower()
+
                         if "times" in fname: family = "ti"
                         elif "courier" in fname: family = "co"
 
@@ -463,6 +547,40 @@ class MainWindow(QMainWindow):
                         )
                         if hasattr(item, '_source_filepath'):
                             page.insert_image(f_rect, filename=item._source_filepath)
+
+                    elif isinstance(item, __import__('PyQt6.QtWidgets', fromlist=['QGraphicsProxyWidget']).QGraphicsProxyWidget):
+                        # Extract Table Data
+                        widget = item.widget()
+                        if widget and hasattr(widget, 'table'):
+                            table = widget.table
+                            rows = table.rowCount()
+                            cols = table.columnCount()
+                            if rows > 0 and cols > 0:
+                                scene_pos = item.scenePos()
+                                x0 = scene_pos.x() / zoom_factor
+                                # Adjust for the handle height
+                                y0 = (scene_pos.y() + widget.handle.height()) / zoom_factor
+
+                                available_w = item.widget().width() / zoom_factor
+                                available_h = (item.widget().height() - widget.handle.height() - widget.grip.height()) / zoom_factor
+
+                                col_w = available_w / cols
+                                row_h = available_h / rows
+
+                                curr_y = y0
+                                for r in range(rows):
+                                    curr_x = x0
+                                    for c in range(cols):
+                                        rect = fitz.Rect(curr_x, curr_y, curr_x + col_w, curr_y + row_h)
+                                        page.draw_rect(rect, color=(0,0,0), width=1)
+
+                                        cell_item = table.item(r, c)
+                                        if cell_item and cell_item.text():
+                                            # Default cell text format
+                                            page.insert_textbox(rect, cell_item.text(), fontname="helv", fontsize=10, color=(0,0,0), align=1)
+
+                                        curr_x += col_w
+                                    curr_y += row_h
 
                     elif isinstance(item, QGraphicsRectItem):
                         # Drawn wireframe rectangle (if brush is transparent, it wasn't processed in Pass 1)
@@ -585,10 +703,19 @@ class MainWindow(QMainWindow):
         if flags & 2: font.setItalic(True)
         if flags & 16: font.setBold(True)
 
-        fontname = span.get("font", "").lower()
-        if "times" in fontname: font.setFamily("Times-Roman")
-        elif "courier" in fontname: font.setFamily("Courier")
-        else: font.setFamily("Helvetica")
+        fontname = span.get("font", "")
+        # PyMuPDF font names often have prefixes like 'ABCDEF+Arial-BoldMT'
+        clean_name = fontname.split('+')[-1] if '+' in fontname else fontname
+        clean_name = clean_name.split('-')[0] # Remove style suffixes
+
+        # If it's a known Base-14 font, map to Qt standard
+        if "times" in clean_name.lower(): font.setFamily("Times New Roman")
+        elif "courier" in clean_name.lower(): font.setFamily("Courier")
+        elif "helv" in clean_name.lower(): font.setFamily("Helvetica")
+        else: font.setFamily(clean_name) # Attempt native OS font match
+
+        # Store original pyMuPDF fontname for compilation fidelity
+        text_item._original_pdf_font = fontname
 
         text_item.setFont(font)
 
